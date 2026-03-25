@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="it">
+
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Service Worker Attivo</title>
+</head>
+
+<body>
+
+<h1>Service Worker attivo</h1>
+
+<script>
+
+if ('serviceWorker' in navigator) {
+
+window.addEventListener('load', function() {
+
+navigator.serviceWorker.register('sw.js')
+.then(function(registration) {
+
+console.log("Service Worker registrato");
+
+const banner = document.createElement("div");
+banner.innerHTML = "SCRIPT IN USO";
+banner.style.position = "fixed";
+banner.style.bottom = "20px";
+banner.style.right = "20px";
+banner.style.background = "black";
+banner.style.color = "white";
+banner.style.padding = "12px";
+banner.style.fontSize = "16px";
+banner.style.zIndex = "9999";
+
+document.body.appendChild(banner);
+
+});
+
+});
+
+}
+
+</script>
+
+</body>
+</html>
