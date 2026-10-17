@@ -47,4 +47,7 @@ select = ["E", "F", "I", "N", "UP", "B", "ASYNC", "S", "DTZ", "RUF"]
 ignore = ["S101"]  # assert ammesso nei test
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S105", "S106"]  # stringhe fittizie nei test delle credenziali
+# S105/S106: stringhe fittizie nei test delle credenziali.
+# S311: random serve a generare serie sintetiche, non chiavi.
+# B008: Decimal come default negli helper dei test e' voluto e immutabile.
+"tests/*" = ["S105", "S106", "S311", "B008"]
