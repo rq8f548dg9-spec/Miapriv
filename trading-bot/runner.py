@@ -40,6 +40,7 @@ from data.store import ParquetStore
 from execution.binance import AiohttpClient, AmbiguousRequestError, BinanceBroker
 from execution.broker import Broker, BrokerError, PaperBroker
 from execution.idempotency import DuplicateOrderError, OrderRegistry
+from execution.leadership import FileLease, LeaseLostError
 from execution.reconcile import Reconciler
 from features.engine import FeatureEngine
 from monitoring.alerts import AlertManager, LogChannel, Severity
@@ -106,6 +107,9 @@ class TradingBot:
     decision_log: DecisionLogger
     state_store: StateStore
     store: ParquetStore | None = None
+    #: Guida del conto: un solo processo alla volta puo' inviare ordini.
+    #: ``None`` solo dove non si invia nulla (backtest, misure).
+    lease: FileLease | None = None
 
     features: FeatureEngine = field(init=False)
     risk: RiskManager = field(init=False)
@@ -124,6 +128,13 @@ class TradingBot:
 
     def __post_init__(self) -> None:
         self.features = FeatureEngine(self.config.features)
+        if self.lease is None:
+            # Accanto allo stato: due processi che condividono lo stato sono
+            # esattamente i due che non devono inviare ordini insieme.
+            self.lease = FileLease(
+                path=Path(self.state_store.path).with_name("leader.json"),
+                clock=self.clock,
+            )
         self.risk = RiskManager.from_config(
             self.config, self.clock, self._next_order_id, self.pending_exposure
         )
@@ -217,6 +228,15 @@ class TradingBot:
         si guarda il saldo, altrimenti si confronterebbe un saldo gia'
         aggiornato con un registro che non lo sa ancora.
         """
+        if self.lease is not None and not self.lease.acquire():
+            corrente = self.lease.read()
+            raise RuntimeError(
+                "un altro processo e' l'emittente autorizzato su questo conto"
+                + (f" ({corrente.owner}, contrassegno {corrente.token})" if corrente else "")
+                + ": questo bot non parte. Chiudi l'altro processo, oppure"
+                " attendi la scadenza della sua guida."
+            )
+
         self.filters = await self.broker.exchange_filters()
         logger.info("filtri letti da exchangeInfo per %d simboli", len(self.filters))
         self.check_order_size_feasible()
@@ -517,6 +537,23 @@ class TradingBot:
         e' lo stesso che compare nella decisione registrata nei log.
         """
         deterministic = order
+        if self.lease is not None:
+            try:
+                self.lease.require()
+            except LeaseLostError as exc:
+                # Non e' un errore da ritentare: un altro processo sta gia'
+                # gestendo questo conto, e due emittenti fanno piu' danno di
+                # un ordine mancato.
+                logger.critical("invio bloccato: %s", exc)
+                self.alerts.notify(
+                    key="guida:persa",
+                    title="GUIDA DEL CONTO PERSA",
+                    detail=f"{exc}. Nessun ordine parte da questo processo.",
+                    severity=Severity.CRITICAL,
+                )
+                self.running = False
+                return
+
         try:
             self.registry.reserve(deterministic)
         except DuplicateOrderError as exc:
@@ -735,6 +772,11 @@ class TradingBot:
             if self.store is not None:
                 self.store.flush()
             await self.broker.close()
+            # La guida si rilascia solo in chiusura pulita: cosi' il
+            # prossimo avvio non deve aspettare la scadenza. Dopo un crash
+            # nessuno la rilascia, ed e' giusto che il subentrante aspetti.
+            if self.lease is not None:
+                self.lease.release()
 
     async def _supervise(self, *, max_iterations: int | None) -> None:
         """Compiti periodici: decisioni, kill switch, riconciliazione, stato."""
@@ -747,6 +789,21 @@ class TradingBot:
                 break
             iterations += 1
             now_ms = self.clock.now_ms()
+
+            # La guida si rinnova a ogni giro: se non e' piu' nostra il bot
+            # si ferma invece di continuare a decidere senza poter eseguire.
+            if self.lease is not None and not self.lease.renew():
+                logger.critical(
+                    "guida del conto persa: un altro processo sta operando, ci si ferma"
+                )
+                self.alerts.notify(
+                    key="guida:persa",
+                    title="GUIDA DEL CONTO PERSA",
+                    detail="un altro processo e' subentrato: questo si ferma",
+                    severity=Severity.CRITICAL,
+                )
+                self.running = False
+                break
 
             # Il giorno va aggiornato prima di valutare la perdita giornaliera:
             # altrimenti a mezzanotte si applica ancora il limite di ieri.

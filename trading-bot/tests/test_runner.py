@@ -45,10 +45,20 @@ def bot(config: AppConfig, tmp_path: Path) -> TradingBot:
 
 
 def make_bot(
-    config: AppConfig, tmp_path: Path, balances: dict[str, Decimal] | None = None
+    config: AppConfig,
+    tmp_path: Path,
+    balances: dict[str, Decimal] | None = None,
+    *,
+    con_guida: bool = True,
 ) -> TradingBot:
     """Bot completo su broker di carta. Il cablaggio e' quello vero: i test
-    che lo ricostruiscono a mano finiscono per provare se' stessi."""
+    che lo ricostruiscono a mano finiscono per provare se' stessi.
+
+    ``con_guida`` prende la guida del conto come farebbe ``startup()``: i
+    test che non passano dall'avvio devono comunque trovarsi nello stato in
+    cui il bot opera davvero. Chi prova proprio l'unicita' dell'emittente
+    la gestisce da se'.
+    """
     clock = SimulatedClock(NOW)
     broker = PaperBroker(
         clock=clock,
@@ -71,6 +81,8 @@ def make_bot(
         store=None,
     )
     instance.filters = {"BTCUSDT": filters_for("BTCUSDT"), "ETHUSDT": filters_for("ETHUSDT")}
+    if con_guida and instance.lease is not None:
+        instance.lease.acquire()
     return instance
 
 
@@ -723,6 +735,82 @@ class TestChiusuraDiEmergenza:
 
         assert not bot.portfolio.positions["BTCUSDT"].is_flat
         assert bot.risk.killswitch.flatten_pending, "la chiusura non e' avvenuta"
+
+
+class TestUnicitaEmittente:
+    """Nessun ordine parte da un processo che non e' l'emittente
+    autorizzato. Il caso reale e' il processo vecchio ancora vivo mentre il
+    nuovo e' gia' partito."""
+
+    @pytest.mark.asyncio
+    async def test_il_bot_non_parte_se_la_guida_e_di_un_altro(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        from execution.leadership import FileLease
+
+        bot = make_bot(config, tmp_path, con_guida=False)
+        assert bot.lease is not None
+        altrui = FileLease(
+            path=bot.lease.path, clock=bot.clock, owner="altro-processo", ttl_ms=30_000
+        )
+        assert altrui.acquire()
+
+        with pytest.raises(RuntimeError, match="emittente"):
+            await bot.startup()
+
+    @pytest.mark.asyncio
+    async def test_persa_la_guida_nessun_ordine_parte(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        from execution.leadership import FileLease
+
+        bot = make_bot(config, tmp_path, con_guida=False)
+        assert bot.lease is not None and bot.lease.acquire()
+
+        # un altro processo subentra dopo la scadenza
+        bot.clock.advance_by(bot.lease.ttl_ms + 1_000)  # type: ignore[attr-defined]
+        subentrante = FileLease(
+            path=bot.lease.path, clock=bot.clock, owner="subentrante", ttl_ms=30_000
+        )
+        assert subentrante.acquire()
+
+        ordine = Order(
+            client_order_id="tb-superato", symbol="BTCUSDT", side=Side.BUY,
+            order_type=OrderType.MARKET, quantity=D("0.0001"),
+            created_at_ms=bot.clock.now_ms(),
+        )
+        await bot.submit(ordine)
+
+        assert bot.broker.acks == {}, "un processo superato ha inviato un ordine"  # type: ignore[attr-defined]
+        assert "tb-superato" not in bot.registry
+
+    @pytest.mark.asyncio
+    async def test_persa_la_guida_il_bot_si_ferma(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        """Fermarsi e' l'unica cosa sensata: continuare a decidere senza
+        poter eseguire produce solo log che sembrano operativita'."""
+        from execution.leadership import FileLease
+
+        bot = make_bot(config, tmp_path, con_guida=False)
+        assert bot.lease is not None and bot.lease.acquire()
+        bot.clock.advance_by(bot.lease.ttl_ms + 1_000)  # type: ignore[attr-defined]
+        FileLease(
+            path=bot.lease.path, clock=bot.clock, owner="subentrante", ttl_ms=30_000
+        ).acquire()
+
+        bot.running = True
+        await bot._supervise(max_iterations=1)
+        assert not bot.running
+
+    @pytest.mark.asyncio
+    async def test_con_la_guida_tutto_funziona_come_prima(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        bot = make_bot(config, tmp_path, con_guida=False)
+        assert bot.lease is not None and bot.lease.acquire()
+        feed_candles(bot, 300)
+        assert await bot.evaluate_symbol("BTCUSDT") is not None
 
 
 class TestChiusuraInterrotta:
