@@ -189,6 +189,15 @@ class ParquetStore:
 
         frame = pl.concat([pl.read_parquet(f) for f in files], how="vertical_relaxed")
         time_column = "ts_ms" if "ts_ms" in frame.columns else "close_time_ms"
+        # Scaricare due volte lo stesso periodo e' normale: il pannello lo fa a
+        # ogni clic. Due righe per la stessa candela non aggiungono
+        # informazione e falsano warmup, rendimenti e conteggi, quindi vince
+        # la piu' recente (i file sono ordinati per istante di scrittura: la
+        # prima copia poteva essere stata presa a candela ancora aperta).
+        if "open_time_ms" in frame.columns:
+            frame = frame.unique(
+                subset=["symbol", "open_time_ms"], keep="last", maintain_order=True
+            )
         if start_ms is not None:
             frame = frame.filter(pl.col(time_column) >= start_ms)
         if end_ms is not None:

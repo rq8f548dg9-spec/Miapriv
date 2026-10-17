@@ -262,6 +262,17 @@ class TestFeatureEngine:
         with pytest.raises(ValueError, match="fuori ordine"):
             engine.on_candle(candle("100", 2))
 
+    def test_la_stessa_candela_due_volte_conta_una(
+        self, config: FeaturesConfig
+    ) -> None:
+        """Una riconnessione puo' riconsegnare l'ultima candela. Contarla due
+        volte sposta il warmup, i rendimenti e la volatilita' senza che sia
+        arrivato nessun dato nuovo."""
+        engine = FeatureEngine(config)
+        engine.on_candle(candle("100", 5))
+        engine.on_candle(candle("100", 5))
+        assert engine.state_for("BTCUSDT").bars_seen == 1
+
     def test_simboli_indipendenti(self, config: FeaturesConfig) -> None:
         engine = FeatureEngine(config)
         for i in range(15):

@@ -446,6 +446,34 @@ class TestParquetStore:
         assert len(candles) == 10
         assert candles[0].close == D("100")
 
+    def test_due_scarichi_dello_stesso_periodo_non_raddoppiano_le_candele(
+        self, tmp_path: Path
+    ) -> None:
+        """Scaricare due volte lo stesso storico e' normale (il pannello lo
+        fa a ogni clic). Due righe per la stessa candela falsano warmup,
+        rendimenti e conteggi senza aggiungere niente."""
+        store = ParquetStore(tmp_path, batch_size=1_000)
+        store.add_candles([self._candle(NOW + i * 60_000) for i in range(5)])
+        store.flush()
+        store.add_candles([self._candle(NOW + i * 60_000) for i in range(5)])
+        store.flush()
+
+        candles = store.read_candles(symbols=["BTCUSDT"])
+        assert len(candles) == 5
+        assert [c.open_time_ms for c in candles] == [NOW + i * 60_000 for i in range(5)]
+
+    def test_la_riga_piu_recente_vince(self, tmp_path: Path) -> None:
+        """Se la stessa candela viene riscaricata con numeri diversi, vale
+        l'ultima: la prima poteva essere stata presa mentre si formava."""
+        store = ParquetStore(tmp_path)
+        store.add_candle(self._candle(NOW, close="100"))
+        store.flush()
+        store.add_candle(self._candle(NOW, close="105"))
+        store.flush()
+        candles = store.read_candles()
+        assert len(candles) == 1
+        assert candles[0].close == D("105")
+
     def test_i_decimali_sopravvivono_al_roundtrip(self, tmp_path: Path) -> None:
         """Un prezzo che passa per float torna indietro diverso."""
         store = ParquetStore(tmp_path)

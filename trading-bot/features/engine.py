@@ -18,6 +18,7 @@ strade divergerebbero e nessun backtest varrebbe niente.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -29,6 +30,8 @@ from features.momentum import MomentumFeatures
 from features.volatility import AverageTrueRange, RealizedVolatility
 
 __all__ = ["FeatureEngine", "FeatureVector", "SymbolFeatureState"]
+
+logger = logging.getLogger("trading_bot.features")
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +93,16 @@ class SymbolFeatureState:
                 f"candela {candle.symbol} fuori ordine: chiusura "
                 f"{candle.close_time_ms} precedente a {self.last_candle_close_ms}"
             )
+        if self.bars_seen > 0 and candle.close_time_ms == self.last_candle_close_ms:
+            # La stessa candela, di nuovo: capita dopo una riconnessione, o
+            # rileggendo uno storico scaricato due volte. Contarla sposta
+            # warmup, rendimenti e volatilita' senza che sia arrivato nulla
+            # di nuovo, quindi si ignora invece di rifiutare: non e' un
+            # errore del chiamante, e' il protocollo che si ripete.
+            logger.debug(
+                "candela %s @%d gia' vista, ignorata", candle.symbol, candle.close_time_ms
+            )
+            return
         self.volatility.update(candle.close)
         self.atr.update(candle)
         self.momentum.update(candle.close)
