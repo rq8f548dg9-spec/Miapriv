@@ -1,7 +1,7 @@
 """Punto di ingresso del bot.
 
-    python -m main                      # usa config/config.yaml
-    python -m main --config altro.yaml
+    python -m main --ui                 # pannello di controllo nel browser
+    python -m main                      # avvia il bot da terminale
     python -m main --check              # valida la configurazione ed esce
     python -m main --backtest           # esegue il backtest sui dati salvati
 
@@ -44,6 +44,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--env", type=Path, default=Path(".env"), help="file con le variabili d'ambiente"
+    )
+    parser.add_argument(
+        "--ui",
+        action="store_true",
+        help="apri il pannello di controllo nel browser invece di usare il terminale",
+    )
+    parser.add_argument("--porta", type=int, default=8777, help="porta del pannello")
+    parser.add_argument(
+        "--senza-browser",
+        action="store_true",
+        help="avvia il pannello senza aprire automaticamente il browser",
     )
     return parser.parse_args(argv)
 
@@ -121,6 +132,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         print(f"configurazione valida: {describe(config)}")
+        return 0
+
+    if args.ui:
+        # Il pannello gestisce chiavi, dati, backtest, avvio e arresto dal
+        # browser. Parte anche senza credenziali: inserirle e' il primo passo
+        # che la pagina stessa propone.
+        from webui.server import run_ui
+
+        run_ui(
+            args.config,
+            port=args.porta,
+            env_path=args.env,
+            open_browser=not args.senza_browser,
+        )
         return 0
 
     if args.backtest or config.mode is Mode.BACKTEST:

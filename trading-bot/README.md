@@ -6,189 +6,89 @@ onestamente** se una strategia funziona, non per confermare che funzioni.
 > Assunzione di partenza: l'edge predittivo **non esiste** finché non è
 > dimostrato dai dati, al netto dei costi di transazione.
 
-Stato: tutte e 8 le fasi implementate. 397 test, `mypy --strict` e `ruff`
-puliti. Il modello ML resta un segnaposto dichiarato: si implementa solo se
-la baseline a regole regge i costi nel backtest.
+Stato: tutte e 8 le fasi implementate, più un pannello di controllo nel
+browser. 424 test, `mypy --strict` e `ruff` puliti. Il modello ML resta un
+segnaposto dichiarato: si implementa solo se la baseline a regole regge i
+costi nel backtest.
 
 ---
 
-# Guida all'uso, dall'inizio alla fine
+# Guida all'uso
 
-## Passo 1 — Installare
+## La via facile: il pannello nel browser
 
-Serve Python 3.11 o superiore.
+**Doppio clic su `avvia.sh`** (Mac e Linux) o **`avvia.bat`** (Windows).
+
+Al primo lancio prepara l'ambiente da solo (un minuto), poi apre il pannello
+nel browser all'indirizzo `http://127.0.0.1:8777`. Da lì si fa tutto, senza
+scrivere un comando:
+
+| Nel pannello | Cosa fa |
+|---|---|
+| **Passo 1 — Collega la testnet** | incolli chiave e segreto, lui li salva in `.env` e verifica subito la connessione mostrandoti i saldi |
+| **Passo 2 — Scarica lo storico** | scegli quanti giorni e premi: i dati finiscono in `data_store/` |
+| **Passo 3 — Prova la strategia** | esegue il backtest e ti dice se regge le commissioni, con l'elenco dei motivi per cui non ha operato |
+| **Avvia il bot** | lo fa partire sulla testnet; il pulsante resta spento finché mancano le chiavi, e la pagina spiega perché |
+| **Situazione** | capitale, guadagno, perdita di giornata, posizioni, stato del kill switch |
+| **Andamento del capitale** | grafico aggiornato ogni cinque secondi, con i valori leggibili anche in tabella |
+| **Decisioni del bot** | ogni valutazione, apribile per vedere i numeri che l'hanno prodotta. I rifiuti sono i più istruttivi: dicono cosa manca alla strategia |
+| **Chiudi tutte le posizioni** | uscita immediata a prezzo di mercato |
+| **Impostazioni** | capitale, taglia degli ordini, limiti di rischio e soglie, validati prima di essere salvati |
+
+Dove serve ancora la tastiera: solo per ottenere le chiavi (vai su
+**testnet.binance.vision** e accedi con GitHub) e, se un giorno lo vorrai,
+per il passaggio a denaro reale.
+
+### Tre cose che il pannello NON può fare, di proposito
+
+- **non si affaccia sulla rete**: ascolta solo su `127.0.0.1`, quindi è
+  raggiungibile solo dal tuo computer. Un'interfaccia che può muovere denaro
+  non va esposta, nemmeno sulla rete di casa;
+- **non può passare a denaro reale**: quel passaggio resta una modifica al
+  file di configurazione più una variabile d'ambiente. Un bottone sarebbe
+  troppo facile da premere;
+- **non mostra mai le chiavi**: le riceve, le scrive in `.env` con permessi
+  `600`, e da quel momento risponde soltanto «configurate: sì».
+
+### Se il doppio clic non funziona
+
+Su Mac, la prima volta: tasto destro sul file → *Apri*. Oppure dal terminale:
 
 ```bash
 cd trading-bot
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+./avvia.sh
+```
+
+Serve Python 3.11 o superiore. Lo script lo verifica e te lo dice.
+
+---
+
+## La via da terminale
+
+Resta disponibile per chi la preferisce, e fa esattamente le stesse cose.
+
+```bash
+cd trading-bot
+python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-```
 
-Verifica che tutto funzioni prima di andare avanti:
+pytest && mypy . && ruff check .      # 424 test
 
-```bash
-pytest                 # 397 test
-mypy .                 # strict, zero errori
-ruff check .
-```
-
-Se i test non passano, fermati qui: non c'è motivo di collegare un exchange
-a un codice che non supera i propri controlli.
-
-## Passo 2 — Creare le chiavi della testnet
-
-1. Vai su **https://testnet.binance.vision** e accedi con GitHub.
-2. Genera una coppia di chiavi API (HMAC-SHA256).
-3. Copia il file di esempio e incollale:
-
-```bash
-cp .env.example .env
-```
-
-```ini
-BINANCE_TESTNET_API_KEY=la-tua-chiave
-BINANCE_TESTNET_API_SECRET=il-tuo-segreto
-```
-
-Il file `.env` non è versionato (`.gitignore`). Le chiavi non compaiono mai
-nel codice né nei log: nei log sono `SecretStr`, e nelle chiamate HTTP il
-segreto entra solo nella firma HMAC, mai nella query.
-
-La testnet dà saldi fittizi (di solito qualche migliaio di USDT). Il
-`capital_quote: 200` in configurazione è il capitale che il bot si autorizza
-a usare, indipendentemente dal saldo disponibile.
-
-## Passo 3 — Leggere e capire la configurazione
-
-Tutto sta in `config/config.yaml`. I valori che contano davvero:
-
-```yaml
-mode: testnet            # backtest | testnet | live
-capital_quote: 200       # capitale di riferimento
-quote_asset: USDT
-
-risk:
-  sizing:
-    kelly_fraction: 0.25     # tetto non superabile: mai Kelly pieno
-    target_order_quote: 5    # ordine nominale ~5 USDT
-    max_order_quote: 20
-    min_order_quote: 5
-  limits:
-    max_open_positions: 2
-    max_gross_exposure_quote: 100
-  killswitch:
-    max_daily_drawdown_pct: 0.03    # -3% in giornata -> stop
-    max_total_drawdown_pct: 0.10    # -10% complessivo -> stop
-    max_consecutive_losses: 5
-```
-
-Controlla che sia valida prima di qualunque cosa:
-
-```bash
-python -m main --check
-```
-
-La validazione è **fail-fast**: un refuso in una chiave (`kely_fraction`)
-blocca l'avvio invece di essere ignorato in silenzio, e le incoerenze
-vengono rifiutate con il motivo (esposizione oltre il capitale, drawdown
-giornaliero oltre quello totale, posizioni massime oltre i simboli
-abilitati).
-
-## Passo 4 — Scaricare i dati storici
-
-```bash
+cp .env.example .env                   # poi incolla le chiavi testnet
+python -m main --check                 # valida la configurazione
 python scripts/fetch_history.py --days 30
+python -m main --backtest              # esce con codice 1 se non regge i costi
+python -m main                         # avvia il bot sulla testnet
+python -m main --ui                    # ...oppure apri il pannello
 ```
 
-Scarica le candele da Binance e le salva in `data_store/` come Parquet
-partizionato per giorno e simbolo. Con `--days 90` ne scarichi di più; per
-un walk-forward servono almeno un paio di mesi.
-
-## Passo 5 — Backtest: la strategia regge i costi?
+Mentre gira, le decisioni si leggono così:
 
 ```bash
-# modo rapido, senza toccare config.yaml
-python -m main --backtest
-```
-
-Stampa una riga di sintesi e un verdetto:
-
-```
-barre=43200 ordini=128 rifiuti=3477 equity 200 -> 203.41 | periodi=43200
-operazioni=61 sharpe=0.84 maxDD=4.12% winrate=0.541 PF=1.18 fee=1.9321
-```
-
-Il comando esce con codice `1` e un messaggio esplicito se la strategia non
-regge i costi. **Questo è il cancello del progetto**: se non lo si supera,
-non si passa né al denaro vero né al modello predittivo.
-
-Cosa aspettarsi, onestamente: sulle sole candele la baseline a regole quasi
-non opera. Le sue tre gambe (order flow imbalance, book imbalance,
-microprice) richiedono trade e book, che le candele non contengono, quindi
-l'edge atteso resta sotto i ~22 bps di costo di un giro completo e il risk
-manager rifiuta. Il motivo di ogni rifiuto è scritto nei log:
-
-```bash
-jq -r 'select(.event=="decision" and .approved==false) | .rejection_reasons[]' \
-  logs/trading_bot.jsonl | sort | uniq -c | sort -rn | head
-```
-
-Per dare alla baseline i dati che le servono bisogna raccogliere trade e
-book dal vivo (passo 6): il bot li salva in `data_store/` mentre gira.
-
-## Passo 6 — Far girare il bot in testnet
-
-```bash
-python -m main
-```
-
-Cosa succede all'avvio, in quest'ordine:
-
-1. legge i filtri da `exchangeInfo` (tick size, step size, MIN_NOTIONAL);
-2. chiede all'exchange il destino degli ordini rimasti in volo;
-3. **ricostruisce lo stato dai saldi reali**, non dal file locale;
-4. apre il WebSocket su trade, candele e profondità dei simboli abilitati;
-5. entra nel ciclo: feature → segnale → risk manager → ordine.
-
-Mentre gira salva tutto in `data_store/`, così alla sessione successiva il
-backtest avrà anche i dati di microstruttura.
-
-Per fermarlo: `Ctrl+C`. Alla chiusura salva lo stato e svuota i buffer.
-
-### Cosa guardare mentre gira
-
-```bash
-# le decisioni, una riga JSON ciascuna
 tail -f logs/trading_bot.jsonl | jq 'select(.event=="decision")'
-
-# solo gli ordini approvati
-tail -f logs/trading_bot.jsonl | jq 'select(.event=="decision" and .approved)'
-
-# la curva di equity
-jq -r 'select(.event=="equity") | [.ts_ms, .equity] | @tsv' logs/trading_bot.jsonl
-
-# lo stato corrente
-cat state/bot_state.json | jq
 ```
 
-Ogni decisione porta con sé **tutte le feature che l'hanno generata** e lo
-stato di rischio del momento. È quello che rende possibile, settimane dopo,
-rispondere a "perché ha comprato alle 03:12".
-
-### Quando il bot si ferma da solo
-
-Il kill switch scatta su: drawdown giornaliero oltre il 3%, drawdown totale
-oltre il 10%, 5 perdite consecutive, latenza ordini oltre 2 secondi, feed
-dati fermo da più di 10 secondi, più di 10 riconnessioni in un'ora,
-divergenza fra stato locale ed exchange.
-
-Allo scatto chiude tutte le posizioni a mercato e **non riparte da solo**:
-`auto_resume: false` è voluto. Dopo uno stop deve guardare i log una
-persona. Per ripartire: leggi `state/bot_state.json` e i log, capisci cosa
-è successo, poi riavvia il processo.
-
-## Passo 7 — Girare 24/7 con Docker
+### Girare 24/7 con Docker
 
 ```bash
 docker compose up -d --build
@@ -197,35 +97,35 @@ docker compose logs -f
 
 I volumi montati fanno sopravvivere dati, log, stato e registro ordini al
 riavvio del container. Il bot gira come utente non privilegiato e non espone
-porte: apre connessioni, non ne accetta.
+porte.
 
-Per fermarlo: `docker compose down`.
+### Quando il bot si ferma da solo
 
-## Passo 8 — Il passaggio a denaro reale
+Il kill switch scatta su: perdita giornaliera oltre il 3%, perdita totale
+oltre il 10%, 5 perdite consecutive, latenza ordini oltre 2 secondi, feed
+dati fermo da più di 10 secondi, più di 10 riconnessioni in un'ora,
+divergenza fra stato locale ed exchange.
 
-**Non farlo** finché non hai: settimane di testnet documentate, un backtest
-walk-forward che regge i costi su finestre diverse, e la certezza di saper
-spiegare ogni decisione presa dal bot.
+Allo scatto chiude tutte le posizioni e **non riparte da solo**:
+`auto_resume: false` è voluto. Dopo uno stop deve guardare i log una persona.
+Nel pannello lo vedi come badge rosso con il motivo.
 
-Quando quel momento arriva, servono **due** azioni indipendenti:
+### Il passaggio a denaro reale
+
+**Non farlo** finché non hai settimane di testnet documentate e un backtest
+walk-forward che regge i costi su finestre diverse.
+
+Quando quel momento arriva servono **due** azioni indipendenti:
 
 1. in `config/config.yaml`: `mode: live`;
 2. nell'ambiente: `I_UNDERSTAND_LIVE_TRADING_RISK=yes` (valore esatto:
    `YES`, `true`, `1`, `sì` non valgono);
 
-e le chiavi live in `.env`, in variabili con nomi diversi da quelle testnet:
-
-```ini
-BINANCE_LIVE_API_KEY=...
-BINANCE_LIVE_API_SECRET=...
-```
-
-Se manca anche solo una delle due condizioni il processo non parte e
-`LiveTradingNotAuthorizedError` dice perché. Tutto questo sta in un solo
-file, `config/live_guard.py`, sotto il banner
-`⚠️ PUNTO DI PASSAGGIO A DENARO REALE`. Non ci sono default permissivi, non
-ci sono fallback, e la guardia non è mai chiamata dentro un `try/except` che
-ne ignori l'eccezione.
+più le chiavi live in `.env`, in variabili con nomi diversi da quelle testnet
+(`BINANCE_LIVE_API_KEY`, `BINANCE_LIVE_API_SECRET`). Se manca anche solo una
+delle due condizioni il processo non parte. Tutto questo sta in un solo file,
+`config/live_guard.py`, sotto il banner
+`⚠️ PUNTO DI PASSAGGIO A DENARO REALE`.
 
 Prima del primo avvio reale, abbassa i limiti: `max_gross_exposure_quote` a
 una frazione del capitale e `max_daily_drawdown_pct` a una soglia che sei
@@ -245,7 +145,9 @@ risk/       manager.py, sizing.py, limits.py, killswitch.py
 execution/  broker.py, binance.py, idempotency.py, reconcile.py
 backtest/   engine.py, costs.py, walkforward.py, metrics.py
 monitoring/ logger.py, state.py, alerts.py
+webui/      server.py + static/index.html (pannello nel browser)
 runner.py   cablaggio    main.py  CLI    scripts/fetch_history.py
+avvia.sh / avvia.bat     lancio con doppio clic
 ```
 
 ## I principi, e dove sono applicati nel codice

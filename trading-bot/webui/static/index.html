@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading bot — pannello</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --plane: #f3f3f0;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --series-1: #2a78d6;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --good-text: #006300;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --plane: #0d0d0d;
+      --text-primary: #f0efec;
+      --text-secondary: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --series-1: #3987e5;
+      --good-text: #0ca30c;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --plane: #0d0d0d;
+    --text-primary: #f0efec;
+    --text-secondary: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-1: #3987e5;
+    --good-text: #0ca30c;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--plane);
+    color: var(--text-primary);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  h3 { font-size: 14px; margin: 0 0 8px; color: var(--text-secondary); }
+  p { margin: 0 0 10px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+
+  header {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+    justify-content: space-between;
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px;
+  }
+  .headline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600; letter-spacing: .02em;
+    padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--plane);
+  }
+  .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .badge.good .dot { background: var(--good); }
+  .badge.warn .dot { background: var(--warning); }
+  .badge.crit .dot { background: var(--critical); }
+
+  button {
+    font: inherit; font-weight: 500; cursor: pointer;
+    padding: 8px 14px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface-1);
+    color: var(--text-primary);
+  }
+  button:hover:not(:disabled) { background: var(--plane); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--series-1); }
+  button.danger { border-color: var(--critical); color: var(--critical); }
+
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px; margin-bottom: 16px;
+  }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--border);
+          border-radius: var(--radius); padding: 12px 14px; }
+  .tile .label { font-size: 12px; color: var(--muted); text-transform: uppercase;
+                 letter-spacing: .04em; }
+  .tile .value { font-size: 24px; font-weight: 600; margin-top: 4px; }
+  .tile .sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  .pos { color: var(--good-text); }
+  .neg { color: var(--critical); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 600; color: var(--text-secondary);
+       border-bottom: 1px solid var(--axis); padding: 6px 8px; }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll { overflow-x: auto; }
+
+  label { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
+  input[type="text"], input[type="password"], input[type="number"] {
+    font: inherit; width: 100%; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--axis); background: var(--plane); color: var(--text-primary);
+  }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+
+  .steps { display: grid; gap: 12px; }
+  .step { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+  .step-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .step-num { width: 24px; height: 24px; border-radius: 50%; flex: none;
+              display: grid; place-items: center; font-size: 13px; font-weight: 600;
+              background: var(--plane); border: 1px solid var(--axis); }
+  .step.done .step-num { background: var(--good); border-color: var(--good); color: #fff; }
+  .step.done .step-title::after { content: " — fatto"; color: var(--good-text); font-weight: 500; }
+  .step-title { font-weight: 600; }
+
+  .msg { border-radius: 8px; padding: 10px 12px; margin-top: 10px; font-size: 13px;
+         border: 1px solid var(--border); background: var(--plane); }
+  .msg.ok { border-left: 3px solid var(--good); }
+  .msg.err { border-left: 3px solid var(--critical); }
+  .msg.warn { border-left: 3px solid var(--warning); }
+  .msg:empty { display: none; }
+
+  .chart-head { display: flex; justify-content: space-between; align-items: baseline;
+                gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+  svg { display: block; width: 100%; height: auto; touch-action: none; }
+  .tooltip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12);
+    font-variant-numeric: tabular-nums; white-space: nowrap; z-index: 5;
+  }
+  .chart-wrap { position: relative; }
+  .empty {
+    border: 1px dashed var(--axis); border-radius: var(--radius);
+    padding: 22px 16px; text-align: center; color: var(--muted); font-size: 13px;
+  }
+
+  details.decision { border-bottom: 1px solid var(--grid); }
+  details.decision summary {
+    cursor: pointer; padding: 8px 4px; display: grid; gap: 8px; align-items: center;
+    grid-template-columns: 70px 90px 1fr auto; font-size: 13px;
+  }
+  details.decision summary::-webkit-details-marker { display: none; }
+  details.decision .body { padding: 4px 8px 12px; font-size: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { background: var(--plane); border: 1px solid var(--border); border-radius: 6px;
+          padding: 2px 7px; font-variant-numeric: tabular-nums; }
+  .reason { color: var(--text-secondary); }
+
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+             margin-bottom: 10px; }
+  .toolbar select { font: inherit; padding: 6px 8px; border-radius: 8px;
+                    border: 1px solid var(--axis); background: var(--plane);
+                    color: var(--text-primary); }
+  .hidden { display: none !important; }
+  footer { color: var(--muted); font-size: 12px; padding: 8px 0 24px; }
+  @media (max-width: 560px) {
+    details.decision summary { grid-template-columns: 60px 1fr; }
+    .wrap { padding: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="headline">
+    <h1>Trading bot</h1>
+    <span class="badge" id="badge-mode"><span class="dot"></span><span>—</span></span>
+    <span class="badge" id="badge-state"><span class="dot"></span><span>—</span></span>
+    <span class="badge crit hidden" id="badge-killswitch"><span class="dot"></span><span>kill switch</span></span>
+  </div>
+  <div class="actions">
+    <button class="primary" id="btn-start">Avvia il bot</button>
+    <button id="btn-stop" disabled>Ferma</button>
+    <button class="danger" id="btn-flatten" disabled>Chiudi tutte le posizioni</button>
+  </div>
+</header>
+
+<div class="msg err hidden" id="global-error"></div>
+<div class="msg warn hidden" id="start-hint"></div>
+
+<!-- ───────────────── preparazione ───────────────── -->
+<section class="card" id="setup">
+  <h2>Preparazione</h2>
+  <div class="steps">
+
+    <div class="step" id="step-keys">
+      <div class="step-head"><span class="step-num">1</span>
+        <span class="step-title">Collega la testnet di Binance</span></div>
+      <p class="small muted">
+        Vai su <strong>testnet.binance.vision</strong>, accedi con GitHub e genera una coppia
+        di chiavi API. Sono chiavi di prova su denaro finto: qui non puoi collegare un conto reale.
+      </p>
+      <div class="fields">
+        <div><label for="api-key">Chiave API</label>
+          <input type="text" id="api-key" autocomplete="off" spellcheck="false"></div>
+        <div><label for="api-secret">Segreto API</label>
+          <input type="password" id="api-secret" autocomplete="off" spellcheck="false"></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="btn-save-keys">Salva e verifica</button>
+        <span class="small muted">Le chiavi finiscono in <code>.env</code>, mai nei log.</span>
+      </div>
+      <div class="msg" id="msg-keys"></div>
+    </div>
+
+    <div class="step" id="step-data">
+      <div class="step-head"><span class="step-num">2</span>
+        <span class="step-title">Scarica lo storico dei prezzi</span></div>
+      <p class="small muted">Serve per provare la strategia prima di farla girare.</p>
+      <div class="row">
+        <div style="max-width:140px"><label for="days">Giorni</label>
+          <input type="number" id="days" value="30" min="1" max="365"></div>
+        <button id="btn-fetch">Scarica</button>
+      </div>
+      <div class="msg" id="msg-data"></div>
+    </div>
+
+    <div class="step" id="step-backtest">
+      <div class="step-head"><span class="step-num">3</span>
+        <span class="step-title">Prova la strategia sullo storico</span></div>
+      <p class="small muted">
+        Misura se la strategia regge le commissioni. Se non le regge, il bot te lo dice:
+        è il cancello da superare prima di tutto il resto.
+      </p>
+      <button id="btn-backtest">Esegui la prova</button>
+      <div class="msg" id="msg-backtest"></div>
+      <div id="backtest-result" class="hidden" style="margin-top:12px"></div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ───────────────── situazione ───────────────── -->
+<section class="card">
+  <h2>Situazione</h2>
+  <div class="tiles" id="tiles"></div>
+</section>
+
+<!-- ───────────────── equity ───────────────── -->
+<section class="card">
+  <div class="chart-head">
+    <h2 style="margin:0">Andamento del capitale</h2>
+    <button id="btn-table" class="small">Mostra i dati</button>
+  </div>
+  <p class="small muted" id="chart-note">Il grafico si riempie mentre il bot gira.</p>
+  <div class="chart-wrap">
+    <svg id="chart" class="hidden" viewBox="0 0 720 240" role="img"
+         aria-label="Andamento del capitale nel tempo"></svg>
+    <div class="empty" id="chart-empty">
+      Nessuna rilevazione ancora: il capitale viene campionato ogni cinque secondi
+      mentre il bot è in esecuzione.
+    </div>
+    <div class="tooltip" id="tooltip"></div>
+  </div>
+  <div class="scroll hidden" id="chart-table"></div>
+</section>
+
+<!-- ───────────────── posizioni ───────────────── -->
+<section class="card">
+  <h2>Posizioni aperte</h2>
+  <div class="scroll" id="positions"></div>
+</section>
+
+<!-- ───────────────── decisioni ───────────────── -->
+<section class="card">
+  <h2>Decisioni del bot</h2>
+  <p class="small muted">
+    Ogni riga è una valutazione. Aprila per vedere i numeri che l'hanno prodotta:
+    i rifiuti sono i più istruttivi, dicono cosa manca alla strategia.
+  </p>
+  <div class="toolbar">
+    <select id="filter-decisions">
+      <option value="tutte">Tutte</option>
+      <option value="approvate">Solo approvate</option>
+      <option value="rifiutate">Solo rifiutate</option>
+    </select>
+    <span class="small muted" id="decisions-count"></span>
+  </div>
+  <div id="decisions"></div>
+</section>
+
+<!-- ───────────────── impostazioni ───────────────── -->
+<section class="card">
+  <h2>Impostazioni</h2>
+  <p class="small muted">Modificabili solo a bot fermo. I valori vengono validati prima di essere salvati.</p>
+  <div class="fields" id="settings"></div>
+  <div class="row" style="margin-top:14px">
+    <button class="primary" id="btn-save-settings">Salva impostazioni</button>
+  </div>
+  <div class="msg" id="msg-settings"></div>
+</section>
+
+<footer>
+  Il pannello funziona solo su questo computer e non può passare a denaro reale:
+  quel passaggio richiede una modifica al file di configurazione più una variabile
+  d'ambiente, di proposito.
+</footer>
+</div>
+
+<script>
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+const fmt = (value, digits = 2) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toLocaleString('it-IT', {
+    minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
+};
+const pct = (value, digits = 2) =>
+  Number.isFinite(Number(value)) ? (Number(value) * 100).toFixed(digits) + '%' : '—';
+const clock = (ms) => new Date(ms).toLocaleTimeString('it-IT');
+const stamp = (ms) => new Date(ms).toLocaleString('it-IT');
+
+let state = null;
+let equityPoints = [];
+let decisions = [];
+let busy = false;
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  let payload = {};
+  try { payload = await response.json(); } catch (_) { /* risposta vuota */ }
+  if (!response.ok) throw new Error(payload.errore || `errore ${response.status}`);
+  return payload;
+}
+const post = (path, body) => api(path, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body || {}),
+});
+
+function note(id, text, kind) {
+  const element = $(id);
+  element.textContent = text || '';
+  element.className = 'msg' + (kind ? ' ' + kind : '');
+}
+
+function showError(message) {
+  const element = $('global-error');
+  element.textContent = message;
+  element.classList.toggle('hidden', !message);
+}
+
+/* ───────────────── intestazione e riquadri ───────────────── */
+
+function renderHeader(s) {
+  const mode = $('badge-mode');
+  mode.className = 'badge ' + (s.denaro_reale ? 'crit' : 'good');
+  mode.lastElementChild.textContent = s.denaro_reale ? 'DENARO REALE' : s.modalita.toUpperCase();
+
+  const running = $('badge-state');
+  running.className = 'badge ' + (s.in_esecuzione ? 'good' : '');
+  running.lastElementChild.textContent = s.in_esecuzione ? 'in esecuzione' : 'fermo';
+
+  const kill = $('badge-killswitch');
+  kill.classList.toggle('hidden', !s.killswitch.scattato);
+  if (s.killswitch.scattato) kill.title = s.killswitch.motivo || '';
+
+  let hint = '';
+  if (s.modalita === 'backtest') {
+    hint = "La configurazione è in modalità «backtest»: il pannello analizza i dati " +
+           "storici ma non fa operare il bot. Per farlo girare imposta «testnet» " +
+           "in config/config.yaml.";
+  } else if (!s.credenziali_presenti) {
+    hint = 'Inserisci le chiavi API nel passo 1 per poter avviare il bot.';
+  }
+  $('start-hint').textContent = hint;
+  $('start-hint').classList.toggle('hidden', !hint || s.in_esecuzione);
+
+  $('btn-start').disabled =
+    s.in_esecuzione || busy || s.modalita === 'backtest' || !s.credenziali_presenti;
+  $('btn-stop').disabled = !s.in_esecuzione;
+  $('btn-flatten').disabled = !s.in_esecuzione || (s.posizioni || []).length === 0;
+  $('btn-save-settings').disabled = s.in_esecuzione;
+
+  $('step-keys').classList.toggle('done', s.credenziali_presenti);
+  $('step-data').classList.toggle('done', (s.dati?.totale || 0) > 0);
+}
+
+function tile(label, value, sub, cls) {
+  return `<div class="tile"><div class="label">${label}</div>
+    <div class="value ${cls || ''}">${value}</div>
+    <div class="sub">${sub || ''}</div></div>`;
+}
+
+function renderTiles(s) {
+  const pnl = Number(s.pnl_realizzato) + Number(s.pnl_non_realizzato);
+  const killLabel = s.killswitch.scattato
+    ? '&#9888; fermo'
+    : (s.in_esecuzione ? '&#10003; attivo' : '&#9675; in attesa');
+  $('tiles').innerHTML = [
+    tile('Capitale', fmt(s.equity) + ' ' + s.valuta,
+         'liquido ' + fmt(s.cash) + ' ' + s.valuta),
+    tile('Guadagno', (pnl >= 0 ? '+' : '') + fmt(pnl) + ' ' + s.valuta,
+         'commissioni ' + fmt(s.commissioni, 4), pnl > 0 ? 'pos' : (pnl < 0 ? 'neg' : '')),
+    tile('Perdita oggi', pct(s.drawdown_giornaliero),
+         'limite ' + pct(settingsCache.drawdown_giornaliero ?? 0.03, 0),
+         s.drawdown_giornaliero > 0 ? 'neg' : ''),
+    tile('Posizioni', String((s.posizioni || []).length),
+         'massimo ' + (settingsCache.posizioni_massime ?? '—')),
+    tile('Perdite di fila', String(s.perdite_consecutive),
+         'limite ' + (settingsCache.perdite_consecutive ?? '—'),
+         s.perdite_consecutive > 0 ? 'neg' : ''),
+    tile('Protezione', killLabel,
+         s.killswitch.scattato ? (s.killswitch.motivo || '').slice(0, 60) : 'kill switch',
+         s.killswitch.scattato ? 'neg' : ''),
+  ].join('');
+}
+
+function renderPositions(s) {
+  const rows = s.posizioni || [];
+  if (!rows.length) {
+    $('positions').innerHTML = '<p class="small muted">Nessuna posizione aperta.</p>';
+    return;
+  }
+  $('positions').innerHTML = `<table><thead><tr>
+      <th>Simbolo</th><th class="num">Quantità</th><th class="num">Prezzo di carico</th>
+      <th class="num">Prezzo ora</th><th class="num">Valore</th><th class="num">P&amp;L</th>
+    </tr></thead><tbody>` + rows.map((p) => {
+      const value = Number(p.pnl);
+      return `<tr><td>${p.simbolo}</td>
+        <td class="num">${p.quantita}</td>
+        <td class="num">${fmt(p.prezzo_carico)}</td>
+        <td class="num">${fmt(p.prezzo_corrente)}</td>
+        <td class="num">${fmt(p.valore)}</td>
+        <td class="num ${value > 0 ? 'pos' : (value < 0 ? 'neg' : '')}">${fmt(p.pnl, 4)}</td>
+      </tr>`;
+    }).join('') + '</tbody></table>';
+}
+
+/* ───────────────── grafico del capitale ─────────────────
+   Una sola serie: nessuna legenda, il titolo la nomina. Ultimo valore
+   etichettato direttamente, griglia recessiva, crosshair al passaggio. */
+
+const CHART = { w: 720, h: 240, left: 56, right: 58, top: 16, bottom: 28 };
+
+function renderChart(points) {
+  const svg = $('chart');
+  const note = $('chart-note');
+  const empty = $('chart-empty');
+  if (points.length < 2) {
+    svg.innerHTML = '';
+    svg.classList.add('hidden');
+    empty.classList.remove('hidden');
+    note.textContent = state && state.in_esecuzione
+      ? 'Raccolta dei primi dati in corso…'
+      : 'Il grafico si riempie mentre il bot gira.';
+    return;
+  }
+  svg.classList.remove('hidden');
+  empty.classList.add('hidden');
+  note.textContent =
+    `${points.length} rilevazioni, da ${clock(points[0].t)} a ${clock(points.at(-1).t)}.`;
+
+  const values = points.map((p) => Number(p.v));
+  const xMin = points[0].t, xMax = points.at(-1).t;
+  let yMin = Math.min(...values), yMax = Math.max(...values);
+  const pad = (yMax - yMin) * 0.12 || Math.max(Math.abs(yMax) * 0.002, 0.01);
+  yMin -= pad; yMax += pad;
+
+  const plotW = CHART.w - CHART.left - CHART.right;
+  const plotH = CHART.h - CHART.top - CHART.bottom;
+  const X = (t) => CHART.left + (xMax === xMin ? plotW : ((t - xMin) / (xMax - xMin)) * plotW);
+  const Y = (v) => CHART.top + plotH - ((v - yMin) / (yMax - yMin || 1)) * plotH;
+
+  const ticks = 4;
+  let grid = '';
+  for (let i = 0; i <= ticks; i++) {
+    const value = yMin + ((yMax - yMin) * i) / ticks;
+    const y = Y(value);
+    grid += `<line x1="${CHART.left}" x2="${CHART.left + plotW}" y1="${y}" y2="${y}"
+             stroke="var(--grid)" stroke-width="1"/>
+             <text x="${CHART.left - 8}" y="${y + 4}" text-anchor="end" font-size="11"
+             fill="var(--muted)" style="font-variant-numeric:tabular-nums">${fmt(value)}</text>`;
+  }
+
+  const line = points.map((p, i) => `${i ? 'L' : 'M'}${X(p.t).toFixed(1)},${Y(Number(p.v)).toFixed(1)}`).join('');
+  const last = points.at(-1);
+  const lastX = X(last.t), lastY = Y(Number(last.v));
+  const first = Number(points[0].v);
+  const change = Number(last.v) - first;
+
+  svg.innerHTML = `
+    ${grid}
+    <line x1="${CHART.left}" x2="${CHART.left + plotW}" y1="${CHART.top + plotH}"
+          y2="${CHART.top + plotH}" stroke="var(--axis)" stroke-width="1"/>
+    <text x="${CHART.left}" y="${CHART.h - 8}" font-size="11" fill="var(--muted)">${clock(xMin)}</text>
+    <text x="${CHART.left + plotW}" y="${CHART.h - 8}" font-size="11" fill="var(--muted)"
+          text-anchor="end">${clock(xMax)}</text>
+    <path d="${line}" fill="none" stroke="var(--series-1)" stroke-width="2"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${lastX}" cy="${lastY}" r="4" fill="var(--series-1)"
+            stroke="var(--surface-1)" stroke-width="2"/>
+    <text x="${Math.min(lastX + 10, CHART.w - 4)}" y="${lastY + 4}" font-size="12"
+          font-weight="600" fill="var(--text-primary)"
+          style="font-variant-numeric:tabular-nums">${fmt(last.v)}</text>
+    <text x="${Math.min(lastX + 10, CHART.w - 4)}" y="${lastY + 19}" font-size="11"
+          fill="${change >= 0 ? 'var(--good-text)' : 'var(--critical)'}"
+          style="font-variant-numeric:tabular-nums">${change >= 0 ? '+' : ''}${fmt(change, 2)}</text>
+    <line id="crosshair" x1="0" x2="0" y1="${CHART.top}" y2="${CHART.top + plotH}"
+          stroke="var(--axis)" stroke-width="1" opacity="0"/>
+    <circle id="hoverdot" r="4" fill="var(--series-1)" stroke="var(--surface-1)"
+            stroke-width="2" opacity="0"/>
+    <rect x="${CHART.left}" y="${CHART.top}" width="${plotW}" height="${plotH}"
+          fill="transparent" id="hitarea"/>`;
+
+  const hit = svg.querySelector('#hitarea');
+  const crosshair = svg.querySelector('#crosshair');
+  const dot = svg.querySelector('#hoverdot');
+  const tooltip = $('tooltip');
+
+  const move = (event) => {
+    const box = svg.getBoundingClientRect();
+    const scale = CHART.w / box.width;
+    const cx = (event.clientX - box.left) * scale;
+    let nearest = points[0], best = Infinity;
+    for (const p of points) {
+      const distance = Math.abs(X(p.t) - cx);
+      if (distance < best) { best = distance; nearest = p; }
+    }
+    const px = X(nearest.t), py = Y(Number(nearest.v));
+    crosshair.setAttribute('x1', px); crosshair.setAttribute('x2', px);
+    crosshair.setAttribute('opacity', '1');
+    dot.setAttribute('cx', px); dot.setAttribute('cy', py); dot.setAttribute('opacity', '1');
+    tooltip.innerHTML = `<strong>${fmt(nearest.v)}</strong><br>${stamp(nearest.t)}`;
+    tooltip.style.opacity = '1';
+    tooltip.style.left = Math.min(px / scale + 12, box.width - 150) + 'px';
+    tooltip.style.top = Math.max(py / scale - 10, 0) + 'px';
+  };
+  const leave = () => {
+    crosshair.setAttribute('opacity', '0');
+    dot.setAttribute('opacity', '0');
+    tooltip.style.opacity = '0';
+  };
+  hit.addEventListener('mousemove', move);
+  hit.addEventListener('pointermove', move);
+  hit.addEventListener('mouseleave', leave);
+  hit.addEventListener('pointerleave', leave);
+
+  renderChartTable(points);
+  syncTableButton(points);
+}
+
+function renderChartTable(points) {
+  const sample = points.slice(-40).reverse();
+  $('chart-table').innerHTML = `<table><thead><tr><th>Istante</th>
+    <th class="num">Capitale</th></tr></thead><tbody>` +
+    sample.map((p) => `<tr><td>${stamp(p.t)}</td><td class="num">${fmt(p.v)}</td></tr>`).join('') +
+    '</tbody></table>';
+}
+
+function syncTableButton(points) {
+  $('btn-table').disabled = points.length < 2;
+}
+
+$('btn-table').onclick = () => {
+  const table = $('chart-table');
+  const visible = !table.classList.contains('hidden');
+  table.classList.toggle('hidden', visible);
+  $('btn-table').textContent = visible ? 'Mostra i dati' : 'Nascondi i dati';
+};
+
+/* ───────────────── decisioni ───────────────── */
+
+function renderDecisions() {
+  const filter = $('filter-decisions').value;
+  const rows = decisions.filter((d) =>
+    filter === 'tutte' || (filter === 'approvate' ? d.approvata : !d.approvata));
+  $('decisions-count').textContent =
+    `${rows.length} mostrate su ${decisions.length} più recenti`;
+
+  if (!rows.length) {
+    $('decisions').innerHTML =
+      '<p class="small muted">Nessuna decisione ancora. Compaiono quando il bot gira.</p>';
+    return;
+  }
+  $('decisions').innerHTML = rows.map((d) => {
+    const verdict = d.approvata
+      ? '<span class="badge good"><span class="dot"></span>ordine</span>'
+      : '<span class="badge"><span class="dot"></span>niente</span>';
+    const summary = d.approvata
+      ? `comprato ${d.quantita}`
+      : (d.motivi[0] || '').slice(0, 90);
+    const features = Object.entries(d.feature || {})
+      .map(([k, v]) => `<span class="chip">${k}: ${Number(v).toFixed(4)}</span>`).join('');
+    const reasons = (d.motivi || [])
+      .map((r) => `<li class="reason">${r}</li>`).join('');
+    return `<details class="decision"><summary>
+        <span class="muted">${clock(d.ts_ms)}</span>
+        <span>${d.simbolo}</span>
+        <span class="reason">${summary}</span>
+        ${verdict}
+      </summary><div class="body">
+        <h3>Perché</h3>
+        ${reasons ? `<ul style="margin:0 0 10px 18px">${reasons}</ul>`
+                  : '<p class="small muted">Tutti i controlli superati.</p>'}
+        <h3>Numeri che l'hanno generata</h3>
+        <div class="chips">${features || '<span class="muted small">nessuna feature</span>'}</div>
+      </div></details>`;
+  }).join('');
+}
+
+$('filter-decisions').onchange = renderDecisions;
+
+/* ───────────────── impostazioni ───────────────── */
+
+const SETTINGS_FIELDS = [
+  ['capitale', 'Capitale di riferimento', 'number', 1],
+  ['ordine_target', 'Valore di un ordine', 'number', 0.1],
+  ['ordine_massimo', 'Ordine massimo', 'number', 0.1],
+  ['posizioni_massime', 'Posizioni aperte al massimo', 'number', 1],
+  ['esposizione_massima', 'Esposizione massima totale', 'number', 1],
+  ['drawdown_giornaliero', 'Stop se perdo in giornata (0.03 = 3%)', 'number', 0.005],
+  ['drawdown_totale', 'Stop se perdo in totale (0.10 = 10%)', 'number', 0.005],
+  ['perdite_consecutive', 'Stop dopo N perdite di fila', 'number', 1],
+  ['probabilita_minima', 'Probabilità minima per operare', 'number', 0.01],
+  ['edge_minimo_bps', 'Vantaggio minimo dopo i costi (bps)', 'number', 0.5],
+];
+
+let settingsCache = {};
+
+function readSetting(raw, path) {
+  return path.reduce((node, key) => (node == null ? undefined : node[key]), raw);
+}
+
+const SETTING_PATHS = {
+  capitale: ['capital_quote'],
+  ordine_target: ['risk', 'sizing', 'target_order_quote'],
+  ordine_massimo: ['risk', 'sizing', 'max_order_quote'],
+  posizioni_massime: ['risk', 'limits', 'max_open_positions'],
+  esposizione_massima: ['risk', 'limits', 'max_gross_exposure_quote'],
+  drawdown_giornaliero: ['risk', 'killswitch', 'max_daily_drawdown_pct'],
+  drawdown_totale: ['risk', 'killswitch', 'max_total_drawdown_pct'],
+  perdite_consecutive: ['risk', 'killswitch', 'max_consecutive_losses'],
+  probabilita_minima: ['signals', 'min_probability'],
+  edge_minimo_bps: ['signals', 'min_expected_edge_bps'],
+};
+
+async function loadSettings() {
+  const payload = await api('/api/config');
+  settingsCache = {};
+  for (const [key, path] of Object.entries(SETTING_PATHS)) {
+    settingsCache[key] = readSetting(payload.grezza, path);
+  }
+  $('settings').innerHTML = SETTINGS_FIELDS.map(([key, label, type, step]) =>
+    `<div><label for="set-${key}">${label}</label>
+     <input type="${type}" step="${step}" id="set-${key}" value="${settingsCache[key]}"></div>`
+  ).join('');
+}
+
+$('btn-save-settings').onclick = async () => {
+  const changes = {};
+  for (const [key] of SETTINGS_FIELDS) {
+    const raw = $('set-' + key).value;
+    changes[key] = raw.includes('.') ? Number(raw) : parseInt(raw, 10);
+  }
+  try {
+    await post('/api/config', changes);
+    note('msg-settings', 'Impostazioni salvate.', 'ok');
+    await loadSettings();
+  } catch (error) {
+    note('msg-settings', error.message, 'err');
+  }
+};
+
+/* ───────────────── azioni ───────────────── */
+
+$('btn-save-keys').onclick = async () => {
+  const api_key = $('api-key').value.trim();
+  const api_secret = $('api-secret').value.trim();
+  if (!api_key || !api_secret) {
+    note('msg-keys', 'Inserisci sia la chiave sia il segreto.', 'err');
+    return;
+  }
+  note('msg-keys', 'Salvataggio e verifica in corso…');
+  try {
+    await post('/api/credenziali', { api_key, api_secret });
+    const check = await post('/api/test-connessione');
+    const balances = Object.entries(check.saldi || {})
+      .map(([asset, amount]) => `${asset} ${fmt(amount, 4)}`).join(', ') || 'nessun saldo';
+    note('msg-keys', `Connessione riuscita (${check.endpoint}). Saldi: ${balances}.`, 'ok');
+    $('api-key').value = ''; $('api-secret').value = '';
+    await refresh();
+  } catch (error) {
+    note('msg-keys', error.message, 'err');
+  }
+};
+
+$('btn-fetch').onclick = async () => {
+  try {
+    await post('/api/scarica-dati', { giorni: Number($('days').value) });
+    note('msg-data', 'Scarico in corso…');
+    pollJob('msg-data');
+  } catch (error) { note('msg-data', error.message, 'err'); }
+};
+
+$('btn-backtest').onclick = async () => {
+  try {
+    await post('/api/backtest');
+    note('msg-backtest', 'Prova in corso…');
+    pollJob('msg-backtest', renderBacktest);
+  } catch (error) { note('msg-backtest', error.message, 'err'); }
+};
+
+async function pollJob(target, onDone) {
+  const timer = setInterval(async () => {
+    try {
+      const { lavoro } = await api('/api/lavoro');
+      if (!lavoro) { clearInterval(timer); return; }
+      if (lavoro.stato === 'in corso') {
+        note(target, `${lavoro.nome}: in corso da ${lavoro.secondi}s…`);
+        return;
+      }
+      clearInterval(timer);
+      // Un lavoro riuscito che riporta un esito negativo non va mostrato in
+      // verde: l'operazione e' andata a buon fine, il risultato no.
+      let kind = 'err';
+      if (lavoro.stato === 'completato') {
+        kind = lavoro.risultato && lavoro.risultato.regge_i_costi === false ? 'warn' : 'ok';
+      }
+      note(target, lavoro.messaggio, kind);
+      if (lavoro.stato === 'completato' && onDone) onDone(lavoro.risultato);
+      refresh();
+    } catch (error) { clearInterval(timer); note(target, error.message, 'err'); }
+  }, 1200);
+}
+
+function renderBacktest(r) {
+  if (!r || !Object.keys(r).length) return;
+  const box = $('backtest-result');
+  box.classList.remove('hidden');
+  const verdict = r.regge_i_costi
+    ? `<div class="msg ok">&#10003; La strategia regge i costi su questi dati.
+        Puoi passare alla testnet.</div>`
+    : `<div class="msg warn">&#9888; La strategia <strong>non</strong> regge i costi
+        su questi dati. Farla girare adesso significherebbe perdere denaro lentamente,
+        anche in testnet: serve lavorarci sopra.</div>`;
+  const reasons = (r.motivi_rifiuto || []).map((m) =>
+    `<tr><td>${m.esempio}</td><td class="num">${m.volte.toLocaleString('it-IT')}</td></tr>`
+  ).join('');
+  box.innerHTML = verdict + `
+    <div class="tiles" style="margin-top:12px">
+      ${tile('Operazioni', String(r.operazioni), `${r.ordini} ordini, ${r.rifiuti} rifiuti`)}
+      ${tile('Rendimento', pct(r.rendimento), `${fmt(r.equity_iniziale)} → ${fmt(r.equity_finale)}`,
+             r.rendimento > 0 ? 'pos' : (r.rendimento < 0 ? 'neg' : ''))}
+      ${tile('Perdita massima', pct(r.max_drawdown), 'dal picco')}
+      ${tile('Commissioni', fmt(r.commissioni, 4), 'pagate in totale')}
+    </div>
+    ${reasons ? `<h3 style="margin-top:14px">Perché il bot non ha operato</h3>
+      <p class="small muted" style="margin:4px 0 8px">Un esempio per tipo, con quante
+      volte è successo.</p>
+      <div class="scroll"><table><thead><tr><th>Motivo</th>
+      <th class="num">Volte</th></tr></thead><tbody>${reasons}</tbody></table></div>` : ''}`;
+}
+
+$('btn-start').onclick = async () => {
+  busy = true; showError('');
+  try { await post('/api/avvia'); }
+  catch (error) { showError(error.message); }
+  finally { busy = false; refresh(); }
+};
+
+$('btn-stop').onclick = async () => {
+  try { await post('/api/ferma'); } catch (error) { showError(error.message); }
+  refresh();
+};
+
+$('btn-flatten').onclick = async () => {
+  if (!confirm('Chiudere subito tutte le posizioni a prezzo di mercato?')) return;
+  try { await post('/api/chiudi-tutto'); } catch (error) { showError(error.message); }
+  refresh();
+};
+
+/* ───────────────── aggiornamento periodico ───────────────── */
+
+async function refresh() {
+  try {
+    state = await api('/api/stato');
+    showError(state.ultimo_errore || '');
+    renderHeader(state);
+    renderTiles(state);
+    renderPositions(state);
+    if (state.dati) {
+      const total = state.dati.totale || 0;
+      $('step-data').classList.toggle('done', total > 0);
+      if (total && !$('msg-data').textContent) {
+        note('msg-data', `${total.toLocaleString('it-IT')} candele già salvate.`, 'ok');
+      }
+    }
+  } catch (error) {
+    showError('Pannello scollegato dal bot: ' + error.message);
+  }
+}
+
+async function refreshSlow() {
+  if (!state || !state.in_esecuzione) return;
+  try {
+    const [eq, dec] = await Promise.all([api('/api/equity'), api('/api/decisioni?limite=100')]);
+    equityPoints = eq.punti || [];
+    decisions = dec.decisioni || [];
+    renderChart(equityPoints);
+    renderDecisions();
+  } catch (_) { /* il prossimo giro riprova */ }
+}
+
+(async function init() {
+  await loadSettings();
+  renderChart([]);
+  renderDecisions();
+  await refresh();
+  await refreshSlow();
+  setInterval(refresh, 2000);
+  setInterval(refreshSlow, 5000);
+})();
+</script>
+</body>
+</html>
