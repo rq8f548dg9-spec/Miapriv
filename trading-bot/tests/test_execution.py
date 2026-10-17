@@ -555,6 +555,15 @@ class TestTimeoutDelTrasporto:
         "status": "FILLED", "executedQty": "0.00100000",
         "cummulativeQuoteQty": "60.00000000", "transactTime": NOW, "fills": [],
     }
+    #: GET /api/v3/order da' le quantita' cumulative, non le esecuzioni: i
+    #: fill si recuperano da myTrades, come fa order_status.
+    ESECUZIONI: ClassVar[list[dict[str, object]]] = [
+        {
+            "symbol": "BTCUSDT", "orderId": 9, "id": 77, "price": "60000.00",
+            "qty": "0.00100000", "commission": "0.00000100", "commissionAsset": "BTC",
+            "time": NOW, "isMaker": False, "isBuyer": True,
+        }
+    ]
 
     @pytest.mark.asyncio
     async def test_un_ordine_andato_in_timeout_si_ritrova_non_si_rimanda(
@@ -563,6 +572,7 @@ class TestTimeoutDelTrasporto:
         http = FakeHttp([
             TransportTimeoutError("timeout su POST /api/v3/order"),
             HttpResponse(200, self.ESEGUITO),  # la GET di verifica lo ritrova
+            HttpResponse(200, self.ESECUZIONI),  # e myTrades ne da' le esecuzioni
         ])
         clock = SimulatedClock(NOW)
         broker = BinanceBroker(
@@ -570,6 +580,7 @@ class TestTimeoutDelTrasporto:
         )
         ack = await broker.submit(self._order())
         assert ack.status is OrderStatus.FILLED
+        assert [f.trade_id for f in ack.fills] == ["77"]
         assert [m for m, _, _ in http.requests].count("POST") == 1, (
             "un esito sconosciuto non si rimanda: si chiede"
         )
