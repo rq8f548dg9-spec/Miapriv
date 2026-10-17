@@ -178,6 +178,32 @@
                     border: 1px solid var(--axis); background: var(--plane);
                     color: var(--text-primary); }
   .hidden { display: none !important; }
+
+  /* Bottoncino "i": spiega un campo senza riempire la pagina di testo. */
+  .info {
+    width: 18px; height: 18px; padding: 0; margin-left: 6px;
+    border-radius: 50%; border: 1px solid var(--axis); background: var(--plane);
+    color: var(--text-secondary); font-size: 11px; font-weight: 700;
+    line-height: 1; cursor: pointer; vertical-align: middle;
+  }
+  .info:hover, .info:focus-visible { border-color: var(--series-1); color: var(--series-1); }
+  /* Selettore con il tag: la regola generica "button:hover" ha specificita'
+     piu' alta di ".info[...]" e lasciava il bottone aperto bianco su bianco. */
+  button.info[aria-expanded="true"],
+  button.info[aria-expanded="true"]:hover {
+    background: var(--series-1); border-color: var(--series-1); color: #fff;
+  }
+  .popover {
+    position: absolute; z-index: 30; max-width: 320px;
+    background: var(--surface-1); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; font-size: 13px; line-height: 1.5;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+  }
+  .popover h4 { margin: 0 0 6px; font-size: 13px; }
+  .popover p { margin: 0 0 8px; }
+  .popover p:last-child { margin: 0; }
+  .popover .esempio { color: var(--text-secondary); }
   footer { color: var(--muted); font-size: 12px; padding: 8px 0 24px; }
   @media (max-width: 560px) {
     details.decision summary { grid-template-columns: 60px 1fr; }
@@ -212,7 +238,7 @@
 
     <div class="step" id="step-keys">
       <div class="step-head"><span class="step-num">1</span>
-        <span class="step-title">Collega la testnet di Binance</span></div>
+        <span class="step-title">Collega la testnet di Binance</span><button type="button" class="info" data-info="chiavi" aria-expanded="false" aria-label="Che cos'è: le chiavi della testnet">i</button></div>
       <p class="small muted">
         Vai su <strong>testnet.binance.vision</strong>, accedi con GitHub e genera una coppia
         di chiavi API. Sono chiavi di prova su denaro finto: qui non puoi collegare un conto reale.
@@ -232,7 +258,7 @@
 
     <div class="step" id="step-data">
       <div class="step-head"><span class="step-num">2</span>
-        <span class="step-title">Scarica lo storico dei prezzi</span></div>
+        <span class="step-title">Scarica lo storico dei prezzi</span><button type="button" class="info" data-info="storico" aria-expanded="false" aria-label="Che cos'è: lo storico dei prezzi">i</button></div>
       <p class="small muted">Serve per provare la strategia prima di farla girare.</p>
       <div class="row">
         <div style="max-width:140px"><label for="days">Giorni</label>
@@ -244,7 +270,7 @@
 
     <div class="step" id="step-backtest">
       <div class="step-head"><span class="step-num">3</span>
-        <span class="step-title">Prova la strategia sullo storico</span></div>
+        <span class="step-title">Prova la strategia sullo storico</span><button type="button" class="info" data-info="prova" aria-expanded="false" aria-label="Che cos'è: la prova sullo storico">i</button></div>
       <p class="small muted">
         Misura se la strategia regge le commissioni. Se non le regge, il bot te lo dice:
         è il cancello da superare prima di tutto il resto.
@@ -259,14 +285,14 @@
 
 <!-- ───────────────── situazione ───────────────── -->
 <section class="card">
-  <h2>Situazione</h2>
+  <h2>Situazione<button type="button" class="info" data-info="situazione" aria-expanded="false" aria-label="Che cos'è: che cosa vedi qui">i</button></h2>
   <div class="tiles" id="tiles"></div>
 </section>
 
 <!-- ───────────────── equity ───────────────── -->
 <section class="card">
   <div class="chart-head">
-    <h2 style="margin:0">Andamento del capitale</h2>
+    <h2 style="margin:0">Andamento del capitale<button type="button" class="info" data-info="grafico" aria-expanded="false" aria-label="Che cos'è: andamento del capitale">i</button></h2>
     <button id="btn-table" class="small">Mostra i dati</button>
   </div>
   <p class="small muted" id="chart-note">Il grafico si riempie mentre il bot gira.</p>
@@ -290,7 +316,7 @@
 
 <!-- ───────────────── decisioni ───────────────── -->
 <section class="card">
-  <h2>Decisioni del bot</h2>
+  <h2>Decisioni del bot<button type="button" class="info" data-info="decisioni" aria-expanded="false" aria-label="Che cos'è: le decisioni del bot">i</button></h2>
   <p class="small muted">
     Ogni riga è una valutazione. Aprila per vedere i numeri che l'hanno prodotta:
     i rifiuti sono i più istruttivi, dicono cosa manca alla strategia.
@@ -309,7 +335,11 @@
 <!-- ───────────────── impostazioni ───────────────── -->
 <section class="card">
   <h2>Impostazioni</h2>
-  <p class="small muted">Modificabili solo a bot fermo. I valori vengono validati prima di essere salvati.</p>
+  <p class="small muted">
+    Modificabili solo a bot fermo. I valori vengono validati prima di essere salvati.
+    Il capitale è un <strong>tetto</strong>: anche se il conto di prova ha molto di più,
+    il bot si limita a questa cifra, così la prova somiglia al conto vero.
+  </p>
   <div class="fields" id="settings"></div>
   <div class="row" style="margin-top:14px">
     <button class="primary" id="btn-save-settings">Salva impostazioni</button>
@@ -324,10 +354,181 @@
 </footer>
 </div>
 
+<div class="popover hidden" id="popover" role="dialog" aria-live="polite"></div>
+
 <script>
 'use strict';
 
 const $ = (id) => document.getElementById(id);
+/* ───────────────── spiegazioni (bottoncini "i") ─────────────────
+   Un testo per chiave; il bottone lo apre vicino a se'. Nessuna libreria:
+   un fumetto solo, riposizionato ogni volta. */
+
+const INFO = {
+  capitale: {
+    titolo: 'Capitale che il bot può usare',
+    testo: `È un <strong>tetto</strong>, non una stima. Il conto di prova di Binance
+      ha migliaia di USDT finti: se qui scrivi 200, il bot ragiona come se ne avesse
+      200 e basta. Le posizioni restano in proporzione e gli stop scattano alle stesse
+      cifre che avresti sul conto vero.`,
+    esempio: 'Tienilo uguale alla cifra che useresti davvero.',
+  },
+  ordine_target: {
+    titolo: 'Valore di riferimento di un ordine',
+    testo: `Serve solo a <strong>stimare i costi</strong> prima di decidere. La taglia
+      vera di ogni ordine la calcola la formula di Kelly: più il segnale è forte, più
+      l'ordine è grande, sempre dentro i limiti qui accanto.`,
+    esempio: 'Per ordini più piccoli agisci su «Ordine massimo», non su questo campo.',
+  },
+  ordine_massimo: {
+    titolo: 'Ordine massimo',
+    testo: `Il tetto vero sulla taglia di un singolo ordine. Qualunque cosa dica
+      Kelly, il bot non supera questa cifra. C'è anche un secondo tetto automatico
+      al 10% del capitale.`,
+    esempio: 'Con capitale 200 e ordine massimo 20, ogni posizione vale al massimo il 10%.',
+  },
+  posizioni_massime: {
+    titolo: 'Posizioni aperte al massimo',
+    testo: `Quante posizioni il bot può tenere aperte contemporaneamente.
+      <strong>Non può superare il numero di simboli abilitati</strong>: con due simboli,
+      il massimo è due, altrimenti il limite non avrebbe alcun effetto e il bot rifiuta
+      di salvare.`,
+    esempio: 'Oggi i simboli abilitati sono BTCUSDT ed ETHUSDT: il valore utile è 1 o 2.',
+  },
+  esposizione_massima: {
+    titolo: 'Esposizione massima totale',
+    testo: `La somma del valore di tutte le posizioni aperte insieme. Non può superare
+      il capitale: sul mercato spot non esiste leva, e chiedere più soldi di quelli
+      che hai non è possibile.`,
+    esempio: 'Con capitale 200, un valore ragionevole è 50–100.',
+  },
+  drawdown_giornaliero: {
+    titolo: 'Stop se perdo in giornata',
+    testo: `Quanto sei disposto a perdere in una sola giornata, come frazione:
+      0,03 vuol dire 3%. Quando viene toccato, il bot <strong>chiude tutto e si
+      ferma</strong>, e non riparte da solo: deve guardarci una persona.`,
+    esempio: 'Con capitale 200, il 3% sono 6 USDT.',
+  },
+  drawdown_totale: {
+    titolo: 'Stop se perdo in totale',
+    testo: `Come sopra, ma misurato dal punto più alto mai raggiunto dal capitale,
+      non dall'inizio della giornata. Deve essere <strong>maggiore o uguale</strong>
+      allo stop giornaliero, altrimenti quello giornaliero non scatterebbe mai per primo.`,
+    esempio: 'Con capitale 200, il 10% sono 20 USDT.',
+  },
+  perdite_consecutive: {
+    titolo: 'Stop dopo N perdite di fila',
+    testo: `Una serie di perdite consecutive è il segnale che le condizioni sono
+      cambiate e la strategia non le sta leggendo. Al raggiungimento del numero il bot
+      si ferma, anche se in euro ha perso poco.`,
+    esempio: 'Una sola operazione in guadagno azzera il contatore.',
+  },
+  probabilita_minima: {
+    titolo: 'Probabilità minima per operare',
+    testo: `Il bot stima la probabilità che un'operazione vada a buon fine. Sotto
+      questa soglia non opera. 0,50 vorrebbe dire «testa o croce»: 0,55 significa
+      pretendere un vantaggio misurabile.`,
+    esempio: 'Alzarla rende il bot più selettivo: meno operazioni, più motivate.',
+  },
+  edge_minimo_bps: {
+    titolo: 'Vantaggio minimo dopo i costi',
+    testo: `In punti base: 1 bps = 0,01%. Il guadagno atteso deve superare i costi
+      (commissioni e slippage, circa 20–25 bps per un giro completo) di almeno questo
+      margine, <strong>altrimenti il bot sta fermo</strong>.`,
+    esempio: 'È il motivo più frequente di rifiuto: significa che il segnale non paga le fee.',
+  },
+  situazione: {
+    titolo: 'Che cosa vedi qui',
+    testo: `<strong>Capitale</strong>: liquidità più valore delle posizioni.
+      <strong>Guadagno</strong>: realizzato più non realizzato, al netto delle
+      commissioni. <strong>Perdita oggi</strong>: quanto sei sceso rispetto
+      all'apertura della giornata. <strong>Protezione</strong>: lo stato del kill
+      switch, cioè il blocco automatico.`,
+  },
+  grafico: {
+    titolo: 'Andamento del capitale',
+    testo: `Il capitale viene campionato ogni cinque secondi mentre il bot è in
+      esecuzione. Passando il mouse vedi il valore esatto in ogni istante; il pulsante
+      «Mostra i dati» apre gli stessi numeri in tabella.`,
+    esempio: 'A bot fermo il grafico resta vuoto: non ci sono rilevazioni da mostrare.',
+  },
+  decisioni: {
+    titolo: 'Le decisioni del bot',
+    testo: `Ogni riga è una valutazione fatta dal bot, anche quando ha deciso di
+      <strong>non</strong> operare. Aprendola vedi i motivi del rifiuto e i numeri
+      (le «feature») su cui ha deciso.`,
+    esempio: 'I rifiuti sono i più utili: dicono cosa manca perché la strategia funzioni.',
+  },
+  chiavi: {
+    titolo: 'Le chiavi della testnet',
+    testo: `La testnet è una copia di Binance con <strong>denaro finto</strong>: stessi
+      prezzi, stesse regole, zero rischio. Le chiavi che generi lì non hanno alcun
+      potere sul tuo conto vero.`,
+    esempio: 'Vengono salvate nel file .env sul tuo computer e non compaiono mai nei log.',
+  },
+  storico: {
+    titolo: 'Lo storico dei prezzi',
+    testo: `Scarica le candele dei giorni passati, cioè prezzo di apertura, massimo,
+      minimo e chiusura di ogni minuto. Servono a provare la strategia sul passato
+      prima di farla operare sul presente.`,
+    esempio: '60 giorni sono circa 86.000 candele per simbolo: bastano e avanzano.',
+  },
+  prova: {
+    titolo: 'La prova sullo storico',
+    testo: `Rigioca la strategia sui dati scaricati applicando commissioni, slippage
+      e ritardo di esecuzione, poi dice se nonostante tutto questo resta in guadagno.
+      È il <strong>cancello</strong>: se non lo supera, non ha senso farla operare.`,
+    esempio: 'Decide alla chiusura di una candela ed esegue all\'apertura della successiva, mai prima.',
+  },
+};
+
+const popover = $('popover');
+let openInfo = null;
+
+function infoButton(key) {
+  return INFO[key]
+    ? `<button type="button" class="info" data-info="${key}"
+        aria-expanded="false" aria-label="Che cos'è: ${INFO[key].titolo}">i</button>`
+    : '';
+}
+
+function closeInfo() {
+  if (!openInfo) return;
+  openInfo.setAttribute('aria-expanded', 'false');
+  popover.classList.add('hidden');
+  openInfo = null;
+}
+
+function toggleInfo(button) {
+  const entry = INFO[button.dataset.info];
+  if (!entry) return;
+  if (openInfo === button) { closeInfo(); return; }
+  closeInfo();
+
+  popover.innerHTML = `<h4>${entry.titolo}</h4><p>${entry.testo}</p>` +
+    (entry.esempio ? `<p class="esempio">${entry.esempio}</p>` : '');
+  popover.classList.remove('hidden');
+
+  const box = button.getBoundingClientRect();
+  const width = popover.offsetWidth;
+  const left = Math.min(
+    Math.max(8, box.left + window.scrollX - width / 2 + box.width / 2),
+    window.scrollX + document.documentElement.clientWidth - width - 8,
+  );
+  popover.style.left = left + 'px';
+  popover.style.top = (box.bottom + window.scrollY + 8) + 'px';
+  button.setAttribute('aria-expanded', 'true');
+  openInfo = button;
+}
+
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('.info');
+  if (button) { event.preventDefault(); toggleInfo(button); return; }
+  if (!event.target.closest('#popover')) closeInfo();
+});
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeInfo(); });
+window.addEventListener('resize', closeInfo);
+
 const fmt = (value, digits = 2) => {
   const n = Number(value);
   return Number.isFinite(n) ? n.toLocaleString('it-IT', {
@@ -632,16 +833,16 @@ $('filter-decisions').onchange = renderDecisions;
 /* ───────────────── impostazioni ───────────────── */
 
 const SETTINGS_FIELDS = [
-  ['capitale', 'Capitale di riferimento', 'number', 1],
-  ['ordine_target', 'Valore di un ordine', 'number', 0.1],
+  ['capitale', 'Capitale che il bot può usare', 'number', 1],
+  ['ordine_target', 'Valore di riferimento di un ordine', 'number', 0.1],
   ['ordine_massimo', 'Ordine massimo', 'number', 0.1],
   ['posizioni_massime', 'Posizioni aperte al massimo', 'number', 1],
   ['esposizione_massima', 'Esposizione massima totale', 'number', 1],
-  ['drawdown_giornaliero', 'Stop se perdo in giornata (0.03 = 3%)', 'number', 0.005],
-  ['drawdown_totale', 'Stop se perdo in totale (0.10 = 10%)', 'number', 0.005],
+  ['drawdown_giornaliero', 'Stop se perdo in giornata', 'number', 0.005],
+  ['drawdown_totale', 'Stop se perdo in totale', 'number', 0.005],
   ['perdite_consecutive', 'Stop dopo N perdite di fila', 'number', 1],
   ['probabilita_minima', 'Probabilità minima per operare', 'number', 0.01],
-  ['edge_minimo_bps', 'Vantaggio minimo dopo i costi (bps)', 'number', 0.5],
+  ['edge_minimo_bps', 'Vantaggio minimo dopo i costi', 'number', 0.5],
 ];
 
 let settingsCache = {};
@@ -670,7 +871,7 @@ async function loadSettings() {
     settingsCache[key] = readSetting(payload.grezza, path);
   }
   $('settings').innerHTML = SETTINGS_FIELDS.map(([key, label, type, step]) =>
-    `<div><label for="set-${key}">${label}</label>
+    `<div><label for="set-${key}">${label}${infoButton(key)}</label>
      <input type="${type}" step="${step}" id="set-${key}" value="${settingsCache[key]}"></div>`
   ).join('');
 }
@@ -704,8 +905,11 @@ $('btn-save-keys').onclick = async () => {
     await post('/api/credenziali', { api_key, api_secret });
     const check = await post('/api/test-connessione');
     const balances = Object.entries(check.saldi || {})
-      .map(([asset, amount]) => `${asset} ${fmt(amount, 4)}`).join(', ') || 'nessun saldo';
-    note('msg-keys', `Connessione riuscita (${check.endpoint}). Saldi: ${balances}.`, 'ok');
+      .map(([asset, amount]) => `${asset} ${fmt(amount, 2)}`).join(', ') || 'nessun saldo';
+    const others = check.altri_asset
+      ? ` (più altri ${check.altri_asset} asset di prova, che il bot non usa)` : '';
+    note('msg-keys',
+         `Connessione riuscita. Saldi utili: ${balances}${others}.`, 'ok');
     $('api-key').value = ''; $('api-secret').value = '';
     await refresh();
   } catch (error) {
@@ -756,6 +960,10 @@ function renderBacktest(r) {
   if (!r || !Object.keys(r).length) return;
   const box = $('backtest-result');
   box.classList.remove('hidden');
+  const periodo = r.periodo
+    ? `<p class="small muted" style="margin:0 0 8px">Periodo analizzato:
+       <strong>${r.periodo.da} – ${r.periodo.a}</strong> (${r.periodo.nota}).</p>`
+    : '';
   const verdict = r.regge_i_costi
     ? `<div class="msg ok">&#10003; La strategia regge i costi su questi dati.
         Puoi passare alla testnet.</div>`
@@ -765,7 +973,7 @@ function renderBacktest(r) {
   const reasons = (r.motivi_rifiuto || []).map((m) =>
     `<tr><td>${m.esempio}</td><td class="num">${m.volte.toLocaleString('it-IT')}</td></tr>`
   ).join('');
-  box.innerHTML = verdict + `
+  box.innerHTML = periodo + verdict + `
     <div class="tiles" style="margin-top:12px">
       ${tile('Operazioni', String(r.operazioni), `${r.ordini} ordini, ${r.rifiuti} rifiuti`)}
       ${tile('Rendimento', pct(r.rendimento), `${fmt(r.equity_iniziale)} → ${fmt(r.equity_finale)}`,

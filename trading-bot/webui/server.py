@@ -39,12 +39,12 @@ from config.credentials import (
     load_dotenv,
 )
 from config.schema import AppConfig, Mode, load_config
-from core.types import TimestampMs, datetime_to_ms
+from core.types import TimestampMs, datetime_to_ms, ms_to_datetime
 from data.store import ParquetStore
 from monitoring.logger import to_jsonable
 from runner import TradingBot, build_bot, build_generator
 
-__all__ = ["BotSupervisor", "create_app", "run_ui"]
+__all__ = ["BotSupervisor", "create_app", "friendly_validation_message", "run_ui"]
 
 logger = logging.getLogger("trading_bot.webui")
 
@@ -396,6 +396,66 @@ def apply_config_changes(raw: dict[str, Any], changes: dict[str, Any]) -> dict[s
     return updated
 
 
+#: Nomi tecnici tradotti nelle etichette che l'utente vede nel pannello.
+#: Un messaggio di errore che cita "max_open_positions" chiede alla persona
+#: di indovinare quale casella toccare.
+NOMI_LEGGIBILI: dict[str, str] = {
+    "capital_quote": "«Capitale che il bot può usare»",
+    "max_gross_exposure_quote": "«Esposizione massima totale»",
+    "max_exposure_pct_of_equity": "«Esposizione massima in percentuale»",
+    "max_open_positions": "«Posizioni aperte al massimo»",
+    "target_order_quote": "«Valore di un ordine»",
+    "max_order_quote": "«Ordine massimo»",
+    "min_order_quote": "«Valore minimo di un ordine»",
+    "max_order_pct_of_equity": "quota massima del capitale per ordine",
+    "max_daily_drawdown_pct": "«Stop se perdo in giornata»",
+    "max_total_drawdown_pct": "«Stop se perdo in totale»",
+    "max_consecutive_losses": "«Stop dopo N perdite di fila»",
+    "min_probability": "«Probabilità minima per operare»",
+    "min_expected_edge_bps": "«Vantaggio minimo dopo i costi»",
+    "kelly_fraction": "frazione di Kelly",
+}
+
+#: Vincoli di pydantic riscritti in italiano corrente.
+_VINCOLI: tuple[tuple[str, str], ...] = (
+    (r"Input should be less than or equal to (\S+)", r"non può superare \1"),
+    (r"Input should be greater than or equal to (\S+)", r"deve essere almeno \1"),
+    (r"Input should be less than (\S+)", r"deve essere minore di \1"),
+    (r"Input should be greater than (\S+)", r"deve essere maggiore di \1"),
+    (r"Input should be a valid integer.*", "deve essere un numero intero"),
+    (r"Input should be a valid number.*", "deve essere un numero"),
+    (r"Field required", "manca un valore obbligatorio"),
+    (r"Extra inputs are not permitted", "campo non riconosciuto"),
+)
+
+
+def friendly_validation_message(error: Exception) -> str:
+    """Traduce un errore di validazione in una frase che l'utente puo' usare.
+
+    Pydantic produce messaggi pensati per chi scrive il codice: citano il nome
+    del modello, il valore completo in input e un link alla documentazione.
+    Riversarli in pagina significa dire alla persona che ha sbagliato senza
+    dirle cosa cambiare.
+    """
+    errors = getattr(error, "errors", None)
+    if not callable(errors):
+        return str(error)
+
+    frasi: list[str] = []
+    for item in errors():
+        testo = str(item.get("msg", "")).removeprefix("Value error, ")
+        for pattern, replacement in _VINCOLI:
+            testo = re.sub(pattern, replacement, testo)
+        posizione = ".".join(str(part) for part in item.get("loc", ()))
+        campo = NOMI_LEGGIBILI.get(posizione.rsplit(".", 1)[-1])
+        frasi.append(f"{campo}: {testo}" if campo else testo)
+
+    messaggio = "; ".join(dict.fromkeys(frasi)) or str(error)
+    for tecnico, leggibile in NOMI_LEGGIBILI.items():
+        messaggio = messaggio.replace(tecnico, leggibile)
+    return messaggio
+
+
 def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Application:
     """Costruisce l'applicazione web del pannello."""
     supervisor = BotSupervisor(config_path=config_path, config=load_config(config_path))
@@ -452,8 +512,8 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
             AppConfig.model_validate(updated)
         except UiError as exc:
             return _error(str(exc))
-        except Exception as exc:
-            return _error(f"configurazione non valida: {exc}")
+        except Exception as exc:  # va mostrato nel pannello, non propagato
+            return _error(friendly_validation_message(exc))
 
         await asyncio.to_thread(
             config_path.write_text,
@@ -502,16 +562,24 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
         finally:
             await broker.close()
 
+        # La testnet accredita centinaia di asset finti: elencarli tutti
+        # riempirebbe lo schermo di roba che al bot non serve. Si mostrano la
+        # valuta di conto e le monete dei simboli abilitati.
+        interessanti = {supervisor.config.quote_asset} | {
+            s.base_asset for s in supervisor.config.enabled_symbols
+        }
+        saldi = {
+            asset: str(amount)
+            for asset, amount in sorted(state.balances.items())
+            if amount > 0 and asset in interessanti
+        }
         return _json(
             {
                 "ok": True,
                 "endpoint": supervisor.config.rest_url,
                 "simboli_letti": sorted(filters),
-                "saldi": {
-                    asset: str(amount)
-                    for asset, amount in sorted(state.balances.items())
-                    if amount > 0
-                },
+                "saldi": saldi,
+                "altri_asset": max(0, len(state.balances) - len(saldi)),
             }
         )
 
@@ -585,14 +653,26 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
             if config.backtest is None:
                 raise UiError("sezione 'backtest' assente in configurazione")
             store = ParquetStore(config.data.parquet_root)
+            symbols = [s.symbol for s in config.enabled_symbols]
+
+            # La finestra scritta nel file e' un default, mentre i dati
+            # scaricati dal pannello sono "gli ultimi N giorni": se le due
+            # cose non si sovrappongono il backtest non deve dire "scarica lo
+            # storico" mentre lo storico c'e'. Si usa l'intersezione quando
+            # esiste, altrimenti tutto quello che c'e', dicendo quale periodo
+            # ha usato davvero.
             candles = store.read_candles(
-                symbols=[s.symbol for s in config.enabled_symbols],
+                symbols=symbols,
                 start_ms=datetime_to_ms(config.backtest.start),
                 end_ms=datetime_to_ms(config.backtest.end),
             )
+            window_note = "finestra indicata in configurazione"
+            if not candles:
+                candles = store.read_candles(symbols=symbols)
+                window_note = "tutto lo storico disponibile"
             if not candles:
                 raise UiError(
-                    "nessun dato nella finestra di backtest: scarica prima lo storico"
+                    "nessuna candela salvata: esegui prima il passo 2 e scarica lo storico"
                 )
             result = BacktestEngine(config, build_generator(config)).run(candles)
             metrics = result.metrics
@@ -606,6 +686,11 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
                     entry = motivi.setdefault(key, {"conteggio": 0, "esempio": reason})
                     entry["conteggio"] = int(entry["conteggio"]) + 1
             payload: dict[str, Any] = {
+                "periodo": {
+                    "da": ms_to_datetime(candles[0].open_time_ms).strftime("%d/%m/%Y"),
+                    "a": ms_to_datetime(candles[-1].close_time_ms).strftime("%d/%m/%Y"),
+                    "nota": window_note,
+                },
                 "barre": result.bars_processed,
                 "ordini": result.orders_submitted,
                 "rifiuti": result.orders_rejected,

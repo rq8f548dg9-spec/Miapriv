@@ -350,3 +350,54 @@ class TestFullRestartScenario:
         rec = reconciler(StubBroker(), OrderRegistry())
         result = await rec.reconcile(Portfolio(D("200")), now_ms=clock.now_ms())
         assert result.ts_ms == NOW
+
+
+class TestTettoDiCapitale:
+    """Il capitale dichiarato deve valere anche quando il conto ne ha di piu'."""
+
+    @pytest.mark.asyncio
+    async def test_il_saldo_abbondante_viene_limitato(self) -> None:
+        """In testnet il conto di prova ha migliaia di unita': senza tetto la
+        prova non somiglierebbe al conto reale."""
+        broker = StubBroker(balances={"USDT": D("15000")})
+        rec = Reconciler(
+            broker=broker,
+            registry=OrderRegistry(),
+            symbols=("BTCUSDT",),
+            max_capital=D("200"),
+        )
+        portfolio = await rec.rebuild_portfolio(prices={})
+        assert portfolio.cash == D("200")
+        assert portfolio.equity == D("200")
+
+    @pytest.mark.asyncio
+    async def test_un_saldo_inferiore_al_tetto_resta_intatto(self) -> None:
+        broker = StubBroker(balances={"USDT": D("120")})
+        rec = Reconciler(
+            broker=broker,
+            registry=OrderRegistry(),
+            symbols=("BTCUSDT",),
+            max_capital=D("200"),
+        )
+        portfolio = await rec.rebuild_portfolio(prices={})
+        assert portfolio.cash == D("120")
+
+    @pytest.mark.asyncio
+    async def test_senza_tetto_si_usa_tutto_il_saldo(self) -> None:
+        broker = StubBroker(balances={"USDT": D("15000")})
+        portfolio = await reconciler(broker, OrderRegistry()).rebuild_portfolio(prices={})
+        assert portfolio.cash == D("15000")
+
+    @pytest.mark.asyncio
+    async def test_il_tetto_non_e_una_divergenza(self) -> None:
+        """Il cash limitato non deve far scattare il kill switch."""
+        broker = StubBroker(balances={"USDT": D("15000")})
+        rec = Reconciler(
+            broker=broker,
+            registry=OrderRegistry(),
+            symbols=("BTCUSDT",),
+            max_capital=D("200"),
+        )
+        portfolio = await rec.rebuild_portfolio(prices={})
+        result = await rec.reconcile(portfolio, now_ms=NOW)
+        assert result.is_consistent

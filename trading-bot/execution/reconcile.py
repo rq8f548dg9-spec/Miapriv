@@ -92,6 +92,12 @@ class Reconciler:
     tolerance: float = 0.001
     #: Simboli di interesse: i saldi di altri asset non riguardano il bot.
     symbols: tuple[str, ...] = ()
+    #: Tetto al capitale che il bot si concede, qualunque sia il saldo reale.
+    #: Serve soprattutto in testnet, dove il conto di prova viene accreditato
+    #: con migliaia di unita': senza tetto, il bot dimensionerebbe le
+    #: posizioni e calcolerebbe i drawdown su un capitale che non somiglia a
+    #: quello vero, e la prova non direbbe niente sul conto reale.
+    max_capital: Decimal | None = None
     history: list[Reconciliation] = field(default_factory=list)
 
     def base_asset(self, symbol: str) -> str:
@@ -106,11 +112,21 @@ class Reconciler:
         produrrebbe un PnL falso, e su quello si deciderebbe davvero.
         """
         state = await self.broker.account_state()
-        cash = state.free(self.quote_asset)
-        if cash <= 0:
+        available = state.free(self.quote_asset)
+        if available <= 0:
             raise ValueError(
                 f"saldo {self.quote_asset} nullo sull'exchange: "
                 "il bot non puo' partire senza capitale"
+            )
+
+        cash = available
+        if self.max_capital is not None and available > self.max_capital:
+            cash = self.max_capital
+            logger.info(
+                "saldo disponibile %s %s, il bot si limita a %s come da configurazione",
+                available,
+                self.quote_asset,
+                self.max_capital,
             )
 
         portfolio = Portfolio(cash)
@@ -185,6 +201,9 @@ class Reconciler:
         resolved, fills = await self.resolve_pending_orders()
         state = await self.broker.account_state()
 
+        # Il confronto riguarda le posizioni, non il cash: il saldo in valuta
+        # puo' superare di molto il capitale che il bot si concede, e non e'
+        # una divergenza ma una scelta.
         differences: list[PositionDiff] = []
         for symbol in self.symbols:
             local = portfolio.positions.get(symbol, Position(symbol)).quantity

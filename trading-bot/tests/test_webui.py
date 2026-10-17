@@ -253,3 +253,142 @@ class TestSupervisore:
         status = supervisor.status()
         assert status["equity"] == "200"
         assert status["posizioni"] == []
+
+
+class TestMessaggiDiErrore:
+    """Un errore che l'utente non capisce e' un errore che non puo' correggere."""
+
+    @pytest.mark.asyncio
+    async def test_errore_di_validazione_leggibile(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        """Il pannello non deve riversare in pagina il dump di pydantic."""
+        response = await client.post("/api/config", json={"posizioni_massime": 16})
+        assert response.status == 400
+        message = (await response.json())["errore"]
+
+        for rumore in ("validation error", "input_value", "type=value_error",
+                       "pydantic.dev", "AppConfig", "{'mode'"):
+            assert rumore not in message, f"il messaggio contiene gergo interno: {rumore}"
+        assert "16" in message
+        assert "Posizioni aperte al massimo" in message
+
+    @pytest.mark.asyncio
+    async def test_errore_su_un_limite_numerico_leggibile(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        response = await client.post("/api/config", json={"probabilita_minima": 1.5})
+        assert response.status == 400
+        message = (await response.json())["errore"]
+        assert "pydantic" not in message.lower()
+        assert "Probabilità minima" in message
+
+    @pytest.mark.asyncio
+    async def test_errore_di_coerenza_leggibile(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        response = await client.post("/api/config", json={"esposizione_massima": 100000})
+        assert response.status == 400
+        message = (await response.json())["errore"]
+        assert "Esposizione massima totale" in message
+        assert "input_value" not in message
+
+
+class TestFinestraDelBacktest:
+    """Lo storico scaricato dal pannello sono "gli ultimi N giorni", mentre la
+    finestra nel file e' una data fissa: le due cose possono non sovrapporsi."""
+
+    @pytest.fixture
+    def config_con_dati_recenti(
+        self, tmp_path: Path, raw_config: dict[str, Any]
+    ) -> Path:
+        """Candele di ieri, finestra di backtest ferma a giugno: il caso reale."""
+        import time
+        from decimal import Decimal
+
+        from core.types import Candle
+        from data.store import ParquetStore
+
+        store_path = tmp_path / "store"
+        store = ParquetStore(store_path)
+        start = int(time.time() * 1000) - 2 * 86_400_000
+        price = Decimal("60000")
+        candles = []
+        for i in range(1_500):
+            price = price + Decimal((i % 7) - 3)
+            candles.append(
+                Candle(
+                    symbol="BTCUSDT",
+                    open_time_ms=start + i * 60_000,
+                    close_time_ms=start + (i + 1) * 60_000 - 1,
+                    open=price,
+                    high=price + Decimal(5),
+                    low=price - Decimal(5),
+                    close=price,
+                    volume=Decimal(10),
+                    quote_volume=price * 10,
+                    trades=20,
+                    is_closed=True,
+                )
+            )
+        store.add_candles(candles)
+        store.flush()
+
+        raw_config["data"]["parquet_root"] = str(store_path)
+        raw_config["symbols"] = [
+            s for s in raw_config["symbols"] if s["symbol"] == "BTCUSDT"
+        ]
+        raw_config["risk"]["limits"]["max_open_positions"] = 1
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump(raw_config, sort_keys=False), encoding="utf-8")
+        return path
+
+    @pytest.mark.asyncio
+    async def test_usa_i_dati_disponibili_se_la_finestra_non_li_copre(
+        self, config_con_dati_recenti: Path, tmp_path: Path
+    ) -> None:
+        """Non deve dire «scarica lo storico» quando lo storico c'e' gia'."""
+        import asyncio
+
+        app = create_app(config_con_dati_recenti, env_path=tmp_path / ".env")
+        async with TestClient(TestServer(app)) as client:
+            assert (await client.post("/api/backtest")).status == 200
+            payload: dict[str, Any] = {"lavoro": {"stato": "in corso"}}
+            for _ in range(200):
+                await asyncio.sleep(0.05)
+                payload = await (await client.get("/api/lavoro")).json()
+                if payload["lavoro"]["stato"] != "in corso":
+                    break
+
+        lavoro = payload["lavoro"]
+        assert lavoro["stato"] == "completato", lavoro["messaggio"]
+        assert lavoro["risultato"]["barre"] == 1_500
+        assert lavoro["risultato"]["periodo"]["nota"] == "tutto lo storico disponibile"
+
+    @pytest.mark.asyncio
+    async def test_senza_nessuna_candela_lo_dice_chiaramente(
+        self, config_file: Path, tmp_path: Path
+    ) -> None:
+        import asyncio
+
+        raw = yaml.safe_load(
+            await asyncio.to_thread(config_file.read_text, encoding="utf-8")
+        )
+        raw["data"]["parquet_root"] = str(tmp_path / "vuoto")
+        await asyncio.to_thread(
+            config_file.write_text,
+            yaml.safe_dump(raw, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        app = create_app(config_file, env_path=tmp_path / ".env")
+        async with TestClient(TestServer(app)) as client:
+            await client.post("/api/backtest")
+            payload: dict[str, Any] = {"lavoro": {"stato": "in corso"}}
+            for _ in range(100):
+                await asyncio.sleep(0.05)
+                payload = await (await client.get("/api/lavoro")).json()
+                if payload["lavoro"]["stato"] != "in corso":
+                    break
+        assert payload["lavoro"]["stato"] == "fallito"
+        assert "passo 2" in payload["lavoro"]["messaggio"]

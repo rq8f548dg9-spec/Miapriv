@@ -111,6 +111,7 @@ class TradingBot:
             killswitch=self.risk.killswitch,
             quote_asset=self.config.quote_asset,
             symbols=tuple(s.symbol for s in self.config.enabled_symbols),
+            max_capital=self.config.capital_quote,
         )
         for symbol_config in self.config.enabled_symbols:
             self.books[symbol_config.symbol] = OrderBookState(
