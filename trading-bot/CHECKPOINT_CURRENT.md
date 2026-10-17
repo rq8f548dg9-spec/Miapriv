@@ -41,3 +41,58 @@ Prima di dichiarare pronto il live: revisione multiprocesso reale del lease di C
 Poi: confronto strategie su dati separati e costi realistici, modelli/scenari, apprendimento controllato, MCP shadow, matrice A–J. Nessun punteggio 95/100 assegnato. Non forzare operazioni abbassando le protezioni per rendere positivo un esempio.
 
 Limite noto aggiuntivo: main.run_backtest stampa ancora una frase di bocciatura quando is_viable è falso anche per campione insufficiente; usare assess(metrics) come verdetto e correggere la presentazione CLI.
+
+---
+
+## Incremento Claude successivo (17 ottobre 2026, dopo `0369c2d`)
+
+Merge del lavoro Codex `0369c2d` nel ramo, senza sovrascritture. Un solo
+conflitto semantico: il test del timeout percorreva la nuova catena
+`GET order` -> `myTrades` con due sole risposte simulate, quindi il parser
+iterava su un dizionario. Allineato alla sequenza reale.
+
+Chiuso in questo incremento:
+
+- **Book stantio (D1).** `OrderBookState.last_event_ms` si scriveva e non
+  si leggeva mai. Il libro pesa per 1.0 su 2.3 del punteggio assoluto
+  della baseline: con il flusso depth fermo e i trade che continuano, il
+  bot decideva su uno spessore inesistente. Nuovo `features.max_book_age_ms`
+  (default 5s): oltre la soglia le feature di book spariscono dal vettore,
+  e `book_age_ms` resta sempre nel vettore per il log della decisione.
+- **Timeout del trasporto.** `TransportTimeoutError` distinto: ritentabile
+  in lettura, `AmbiguousRequestError` sugli invii. Prima arrivava come
+  errore qualunque e il runner marcava l'ordine come rifiutato.
+- **Sei parametri orfani (J3).** `data.ws_ping_interval_s`,
+  `data.orderbook_resync_s` (riallineamento preventivo, non solo dopo una
+  rottura), `data.retention_days` (potatura giornaliera dello storico),
+  `data.buffer_capacity` (tetto ai trade in memoria; quando taglia, l'OFI
+  sulle finestre non piu' coperte vale `None` invece di un numero su mezza
+  finestra), `exchange.max_orders_per_10s` / `max_orders_per_day`
+  (contatore degli ordini, diverso dal peso: la finestra breve si aspetta,
+  quella giornaliera ferma gli invii), `signals.cooldown_s` (raffreddamento
+  per simbolo dopo un segnale). Verificato che nessuno dei sei resti
+  dichiarato e non letto.
+- **F5.** `main --backtest` non collassa piu' i tre esiti in due:
+  POSITIVA esce 0, NEGATIVA esce 1, INSUFFICIENTE esce 3 e dichiara che
+  non e' una bocciatura. README aggiornato.
+
+Evidenze su questo container (Linux, Python 3.13): **673 passed**,
+`mypy --strict` pulito su 75 file, `ruff check` pulito. Ogni correzione ha
+un test scritto prima e visto rosso sul codice precedente; book stantio,
+riallineamento e potatura dimostrati portanti anche per mutazione con
+ripristino da copia.
+
+Prova di installazione da pacchetto pulito, eseguita davvero: archivio
+estratto in una cartella vuota, venv creato, `pip install -e .` riuscito
+(il blocco setuptools segnalato prima non si ripresenta qui),
+`python -m main --check` valido, pannello su 127.0.0.1:8777 che risponde
+200 senza errori nel log. Backtest su 14.400 candele sintetiche: 0 ordini,
+7.010 rifiuti per edge inferiore ai costi, esito INSUFFICIENTE. Nessuna
+chiamata autenticata, nessun ordine, nessun test live o testnet.
+
+Resta aperto, invariato rispetto all'elenco sopra: ledger a eventi con
+conferimenti e prelievi distinti dal PnL, user data stream come fonte
+autorevole dei fill (API nuova, non listenKey), modalita' paper continua,
+modello e motore scenari, apprendimento, bridge MCP, soak 72 ore,
+paginazione oltre 1000 fill, revisione multiprocesso vera del lease.
+Nessun punteggio della matrice A-J assegnato.
