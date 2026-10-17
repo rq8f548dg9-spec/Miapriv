@@ -17,6 +17,7 @@ ridurre il rischio deve restare sempre possibile.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Protocol
@@ -114,6 +115,7 @@ class RiskManager:
         config: AppConfig,
         clock: Clock,
         client_order_id_factory: ClientOrderIdFactory,
+        pending_exposure: Callable[[], Mapping[str, Decimal]] | None = None,
     ) -> RiskManager:
         """Costruisce il risk manager dalla configurazione validata."""
         caps = {s.symbol: s.max_position_quote for s in config.enabled_symbols}
@@ -130,6 +132,7 @@ class RiskManager:
                     config.risk.limits.min_correlation_samples,
                 ),
                 rates=OrderRateTracker(),
+                pending_exposure=pending_exposure,
             ),
             client_order_id_factory=client_order_id_factory,
         )

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict, deque
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
@@ -130,7 +131,14 @@ class OrderRateTracker:
 
 
 class LimitChecker:
-    """Applica i limiti di portafoglio a un ordine candidato."""
+    """Applica i limiti di portafoglio a un ordine candidato.
+
+    ``pending_exposure`` restituisce il controvalore degli ordini inviati e
+    non ancora conclusi, per simbolo. E' esposizione in arrivo: senza
+    contarla, due decisioni prese prima che la prima venga eseguita vedono
+    entrambe un portafoglio vuoto e il limite sul numero di posizioni non
+    protegge piu' da niente.
+    """
 
     def __init__(
         self,
@@ -139,9 +147,11 @@ class LimitChecker:
         max_position_quote: dict[str, Decimal],
         correlations: CorrelationTracker | None = None,
         rates: OrderRateTracker | None = None,
+        pending_exposure: Callable[[], Mapping[str, Decimal]] | None = None,
     ) -> None:
         self._config = config
         self._max_position_quote = max_position_quote
+        self._pending_exposure = pending_exposure or (lambda: {})
         self._correlations = correlations or CorrelationTracker(
             config.correlation_lookback_bars, config.min_correlation_samples
         )
@@ -154,6 +164,14 @@ class LimitChecker:
     @property
     def rates(self) -> OrderRateTracker:
         return self._rates
+
+    def pending(self) -> Mapping[str, Decimal]:
+        """Esposizione gia' impegnata da ordini in volo, per simbolo."""
+        return {
+            symbol: notional
+            for symbol, notional in self._pending_exposure().items()
+            if notional > 0
+        }
 
     def check(
         self, proposal: OrderProposal, snapshot: PortfolioSnapshot, *, now_ms: TimestampMs
@@ -213,12 +231,14 @@ class LimitChecker:
     def _check_position_count(
         self, proposal: OrderProposal, snapshot: PortfolioSnapshot
     ) -> list[str]:
-        open_symbols = set(snapshot.open_positions)
+        open_symbols = set(snapshot.open_positions) | set(self.pending())
         if proposal.symbol in open_symbols:
             return []
         if len(open_symbols) >= self._config.max_open_positions:
+            in_volo = sorted(set(self.pending()) - set(snapshot.open_positions))
+            dettaglio = f" (di cui in volo: {in_volo})" if in_volo else ""
             return [
-                f"{len(open_symbols)} posizioni aperte, limite "
+                f"{len(open_symbols)} posizioni aperte{dettaglio}, limite "
                 f"{self._config.max_open_positions}: nessuno slot per {proposal.symbol}"
             ]
         return []
@@ -229,7 +249,11 @@ class LimitChecker:
         cap = self._max_position_quote.get(proposal.symbol)
         if cap is None:
             return [f"{proposal.symbol} non e' fra i simboli configurati"]
-        projected = snapshot.exposure_for(proposal.symbol) + proposal.notional
+        projected = (
+            snapshot.exposure_for(proposal.symbol)
+            + self.pending().get(proposal.symbol, Decimal(0))
+            + proposal.notional
+        )
         if projected > cap:
             return [
                 f"esposizione su {proposal.symbol} salirebbe a {projected:.2f}, "
@@ -241,7 +265,11 @@ class LimitChecker:
         self, proposal: OrderProposal, snapshot: PortfolioSnapshot
     ) -> list[str]:
         reasons: list[str] = []
-        projected = snapshot.gross_exposure + proposal.notional
+        projected = (
+            snapshot.gross_exposure
+            + sum(self.pending().values(), Decimal(0))
+            + proposal.notional
+        )
         if projected > self._config.max_gross_exposure_quote:
             reasons.append(
                 f"esposizione lorda salirebbe a {projected:.2f}, "
@@ -261,7 +289,9 @@ class LimitChecker:
         self, proposal: OrderProposal, snapshot: PortfolioSnapshot
     ) -> list[str]:
         reasons: list[str] = []
-        for symbol in snapshot.open_positions:
+        # Anche un ordine in volo e' una posizione, ai fini della
+        # correlazione: fra poco sara' aperta davvero.
+        for symbol in sorted(set(snapshot.open_positions) | set(self.pending())):
             if symbol == proposal.symbol:
                 continue
             rho = self._correlations.correlation(proposal.symbol, symbol)

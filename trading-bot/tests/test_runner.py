@@ -41,6 +41,12 @@ def config() -> AppConfig:
 
 @pytest.fixture
 def bot(config: AppConfig, tmp_path: Path) -> TradingBot:
+    return make_bot(config, tmp_path)
+
+
+def make_bot(config: AppConfig, tmp_path: Path) -> TradingBot:
+    """Bot completo su broker di carta. Il cablaggio e' quello vero: i test
+    che lo ricostruiscono a mano finiscono per provare se' stessi."""
     clock = SimulatedClock(NOW)
     broker = PaperBroker(
         clock=clock,
@@ -153,6 +159,38 @@ class TestDecisionFlow:
         feed_candles(bot, 300, symbol="ETHUSDT")
         bot.last_prices.pop("ETHUSDT", None)
         assert await bot.evaluate_symbol("ETHUSDT") is None
+
+
+class TestOrdiniInVolo:
+    @pytest.mark.asyncio
+    async def test_un_acquisto_in_volo_occupa_uno_slot(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        """Due simboli valutati prima che il primo ordine sia eseguito
+        vedevano entrambi il portafoglio vuoto: con "una posizione al
+        massimo" ne venivano aperte due."""
+        limiti = config.risk.limits.model_copy(update={"max_open_positions": 1})
+        stretta = config.model_copy(
+            update={"risk": config.risk.model_copy(update={"limits": limiti})}
+        )
+        bot = make_bot(stretta, tmp_path)
+
+        feed_candles(bot, 300, symbol="ETHUSDT")
+        bot.registry.reserve(
+            Order(
+                client_order_id="tb-btc-in-volo", symbol="BTCUSDT", side=Side.BUY,
+                order_type=OrderType.LIMIT, quantity=D("0.0001"),
+                created_at_ms=bot.clock.now_ms(), price=D("60000"),
+            )
+        )
+        bot.last_prices["BTCUSDT"] = D("60000")
+
+        order = await bot.evaluate_symbol("ETHUSDT")
+        assert order is None
+        assert any(
+            "posizioni aperte" in motivo
+            for motivo in bot.risk.decisions[-1].rejection_reasons
+        ), bot.risk.decisions[-1].rejection_reasons
 
 
 class TestDatiVecchiNelRunner:

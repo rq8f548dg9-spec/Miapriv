@@ -180,6 +180,30 @@ class TestBacktestEngine:
         assert reasons
 
 
+class TestOrdiniInVoloNelBacktest:
+    def test_non_apre_piu_posizioni_di_quante_ne_permette(
+        self, config: AppConfig
+    ) -> None:
+        """A33: con "una posizione al massimo" il backtest ne apriva due,
+        BTC ed ETH, perche' l'ordine gia' deciso non occupava nessuno slot
+        finche' non veniva eseguito alla barra dopo."""
+        limiti = config.risk.limits.model_copy(update={"max_open_positions": 1})
+        stretto = config.model_copy(
+            update={"risk": config.risk.model_copy(update={"limits": limiti})}
+        )
+        candles = synthetic_candles(300) + synthetic_candles(
+            300, seed=42, symbol="ETHUSDT", start_price=D("3000")
+        )
+        result = BacktestEngine(stretto, AlwaysTradingGenerator()).run(candles)
+        quantita: dict[str, Decimal] = {}
+        massimo = 0
+        for fill in sorted(result.fills, key=lambda f: f.ts_ms):
+            segno = D(1) if fill.side is Side.BUY else D(-1)
+            quantita[fill.symbol] = quantita.get(fill.symbol, D(0)) + segno * fill.quantity
+            massimo = max(massimo, sum(1 for q in quantita.values() if q > 0))
+        assert massimo <= 1, f"fino a {massimo} simboli aperti insieme"
+
+
 class TestWalkForward:
     def test_finestre_scorrevoli(self) -> None:
         config = WalkForwardConfig(train_days=30, test_days=7, step_days=7,

@@ -120,7 +120,9 @@ class TradingBot:
 
     def __post_init__(self) -> None:
         self.features = FeatureEngine(self.config.features)
-        self.risk = RiskManager.from_config(self.config, self.clock, self._next_order_id)
+        self.risk = RiskManager.from_config(
+            self.config, self.clock, self._next_order_id, self.pending_exposure
+        )
         # Le monete gia' presenti sul conto si rileggono dallo stato salvato:
         # senza, dopo un riavvio il bot scambierebbe la propria posizione per
         # roba di qualcun altro e smetterebbe di gestirla.
@@ -379,6 +381,21 @@ class TradingBot:
             return None
         await self.submit(decision.order)
         return decision.order
+
+    def pending_exposure(self) -> dict[str, Decimal]:
+        """Controvalore degli acquisti inviati e non ancora conclusi.
+
+        E' esposizione in arrivo: va contata prima che arrivi, altrimenti due
+        decisioni prese nello stesso istante vedono entrambe il portafoglio
+        vuoto e aprono due posizioni dove ne era permessa una.
+        """
+        riservato: dict[str, Decimal] = {}
+        for symbol, quantity in self.registry.pending_quantities(Side.BUY).items():
+            price = self.last_prices.get(symbol) or self.portfolio.mark_prices.get(symbol)
+            if price is None:
+                continue
+            riservato[symbol] = quantity * price
+        return riservato
 
     async def submit(self, order: Order) -> None:
         """Invia un ordine passando dal registro: niente duplicati, mai.

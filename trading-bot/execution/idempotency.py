@@ -142,6 +142,26 @@ class OrderRegistry:
             if not OrderStatus(str(record["status"])).is_terminal
         ]
 
+    def pending_quantities(self, side: Side | None = None) -> dict[str, Decimal]:
+        """Quantita' ancora in volo per simbolo, al netto di quanto gia' eseguito.
+
+        Serve a riservare esposizione: un ordine inviato e non concluso e'
+        una posizione che sta arrivando, e va contata prima che arrivi.
+        """
+        totali: dict[str, Decimal] = {}
+        for order_id in self.pending_ids():
+            record = self._records[order_id]
+            if side is not None and Side(str(record["side"])) is not side:
+                continue
+            residuo = Decimal(str(record["quantity"])) - Decimal(
+                str(record.get("filled_quantity", "0"))
+            )
+            if residuo <= 0:
+                continue
+            symbol = str(record["symbol"])
+            totali[symbol] = totali.get(symbol, Decimal(0)) + residuo
+        return totali
+
     # -- aggiornamento ----------------------------------------------------
 
     def reserve(self, order: Order) -> None:

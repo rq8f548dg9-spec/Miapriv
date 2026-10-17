@@ -401,6 +401,38 @@ class TestLimits:
         proposal = OrderProposal("BTCUSDT", Side.BUY, D("0.0002"), BTC_PRICE, OrderIntent.OPEN)
         assert checker.check(proposal, snapshot_of(portfolio), now_ms=NOW) == ()
 
+    def test_un_ordine_in_volo_occupa_uno_slot(self, config: AppConfig) -> None:
+        """Un ordine inviato e non ancora eseguito e' esposizione in arrivo.
+        Senza contarlo, con "una posizione al massimo" il bot ne apre due: la
+        seconda decisione vede ancora il portafoglio vuoto."""
+        uno_solo = config.risk.limits.model_copy(update={"max_open_positions": 1})
+        checker = LimitChecker(
+            uno_solo,
+            max_position_quote={s.symbol: s.max_position_quote for s in config.enabled_symbols},
+            pending_exposure=lambda: {"BTCUSDT": D("6")},
+        )
+        proposal = OrderProposal("ETHUSDT", Side.BUY, D("0.002"), D("3000"), OrderIntent.OPEN)
+        reasons = checker.check(proposal, snapshot_of(Portfolio(D("200"))), now_ms=NOW)
+        assert any("posizioni aperte" in r or "in volo" in r for r in reasons), reasons
+
+    def test_un_ordine_in_volo_conta_nellesposizione_lorda(self, config: AppConfig) -> None:
+        stretto = config.risk.limits.model_copy(
+            update={"max_gross_exposure_quote": D("10")}
+        )
+        checker = LimitChecker(
+            stretto,
+            max_position_quote={s.symbol: s.max_position_quote for s in config.enabled_symbols},
+            pending_exposure=lambda: {"BTCUSDT": D("8")},
+        )
+        proposal = OrderProposal("BTCUSDT", Side.BUY, D("0.0001"), BTC_PRICE, OrderIntent.OPEN)
+        reasons = checker.check(proposal, snapshot_of(Portfolio(D("200"))), now_ms=NOW)
+        assert any("esposizione" in r for r in reasons), reasons
+
+    def test_senza_ordini_in_volo_nulla_cambia(self, config: AppConfig) -> None:
+        checker = self._checker(config)
+        proposal = OrderProposal("BTCUSDT", Side.BUY, D("0.0002"), BTC_PRICE, OrderIntent.OPEN)
+        assert checker.check(proposal, snapshot_of(Portfolio(D("200"))), now_ms=NOW) == ()
+
     def test_blocca_oltre_il_numero_massimo_di_posizioni(self, config: AppConfig) -> None:
         checker = self._checker(config, caps={"ADAUSDT": D("50")})
         portfolio = Portfolio(D("200"))

@@ -140,9 +140,26 @@ class BacktestEngine:
         clock = SimulatedClock(ordered[0].open_time_ms)
         portfolio = Portfolio(initial)
         features = FeatureEngine(self.config.features)
-        risk = RiskManager.from_config(self.config, clock, self._client_order_id)
-
         pending: dict[str, Order] = {}
+
+        def esposizione_in_volo() -> dict[str, Decimal]:
+            """Ordini decisi e non ancora eseguiti: esposizione gia' impegnata.
+
+            Senza questo, con "una posizione al massimo" il backtest ne apre
+            due nella stessa barra, perche' entrambe le decisioni vedono il
+            portafoglio ancora vuoto. Il live ha lo stesso problema, e la
+            stessa soluzione: un backtest che non lo riproduce misura un bot
+            diverso da quello che opera.
+            """
+            return {
+                symbol: order.quantity
+                * Decimal(str(order.metadata.get("reference_price", "0")))
+                for symbol, order in pending.items()
+            }
+
+        risk = RiskManager.from_config(
+            self.config, clock, self._client_order_id, esposizione_in_volo
+        )
         fills: list[Fill] = []
         trades: list[TradeResult] = []
         equity_curve: list[tuple[TimestampMs, Decimal]] = [(clock.now_ms(), portfolio.equity)]
