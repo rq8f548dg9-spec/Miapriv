@@ -1006,7 +1006,9 @@ function renderBacktest(r) {
   ).join('');
   box.innerHTML = periodo + verdict + `
     <div class="tiles" style="margin-top:12px">
-      ${tile('Operazioni', String(r.operazioni), `${r.ordini} ordini, ${r.rifiuti} rifiuti`)}
+      ${tile('Operazioni', String(r.operazioni),
+             `${r.ordini} ordini, ${r.rifiuti} rifiuti` +
+             (r.non_eseguiti ? `, ${r.non_eseguiti} non eseguibili` : ''))}
       ${tile('Rendimento', pct(r.rendimento), `${fmt(r.equity_iniziale)} → ${fmt(r.equity_finale)}`,
              r.rendimento > 0 ? 'pos' : (r.rendimento < 0 ? 'neg' : ''))}
       ${tile('Perdita massima', pct(r.max_drawdown), 'dal picco')}

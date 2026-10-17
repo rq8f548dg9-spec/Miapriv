@@ -876,6 +876,9 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
                 "barre": result.bars_processed,
                 "ordini": result.orders_submitted,
                 "rifiuti": result.orders_rejected,
+                # Ordini approvati che l'exchange simulato non avrebbe
+                # potuto eseguire al prezzo trovato alla barra dopo.
+                "non_eseguiti": result.orders_unfilled,
                 "equity_iniziale": str(result.initial_equity),
                 "equity_finale": str(result.final_equity),
                 "rendimento": round(result.total_return, 6),
