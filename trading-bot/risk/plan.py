@@ -34,6 +34,30 @@ class PianoDiUscita:
     long: bool
     created_ms: TimestampMs
 
+    def __post_init__(self) -> None:
+        for name, price in (
+            ("entry_price", self.entry_price),
+            ("stop_price", self.stop_price),
+            ("target_price", self.target_price),
+        ):
+            if not price.is_finite() or price <= 0:
+                raise ValueError(f"{name} deve essere finito e positivo: {price}")
+
+        if self.created_ms < 0:
+            raise ValueError(f"created_ms non puo' essere negativo: {self.created_ms}")
+
+        livelli_validi = (
+            self.stop_price < self.entry_price < self.target_price
+            if self.long
+            else self.target_price < self.entry_price < self.stop_price
+        )
+        if not livelli_validi:
+            direzione = "long" if self.long else "short"
+            raise ValueError(
+                f"livelli del piano {direzione} non validi: entry={self.entry_price}, "
+                f"stop={self.stop_price}, target={self.target_price}"
+            )
+
     def violato_da(self, price: Decimal) -> str | None:
         """Nome del livello raggiunto da questo prezzo, o None."""
         if self.long:
@@ -59,12 +83,15 @@ class PianoDiUscita:
 
     @classmethod
     def from_dict(cls, symbol: str, payload: dict[str, str]) -> PianoDiUscita:
+        direzione = payload["long"]
+        if direzione not in ("1", "0"):
+            raise ValueError(f"long non valido nel piano di uscita: {direzione!r}")
         return cls(
             symbol=symbol,
             entry_price=Decimal(payload["entry_price"]),
             stop_price=Decimal(payload["stop_price"]),
             target_price=Decimal(payload["target_price"]),
-            long=payload["long"] == "1",
+            long=direzione == "1",
             created_ms=int(payload["created_ms"]),
         )
 

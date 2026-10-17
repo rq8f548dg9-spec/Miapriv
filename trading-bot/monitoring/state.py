@@ -15,13 +15,14 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from core.clock import Clock
 from core.portfolio import Portfolio
-from core.types import TimestampMs
+from core.types import TimestampMs, ms_to_datetime
 from monitoring.logger import to_jsonable
 from risk.killswitch import KillSwitch
 
@@ -77,6 +78,32 @@ class BotState:
                 f"stato salvato con versione {version}, attesa {STATE_VERSION}: "
                 "il formato e' cambiato, lo stato va ricostruito dall'exchange"
             )
+        if type(payload["killswitch_tripped"]) is not bool:
+            raise ValueError("stato kill switch non booleano")
+        saved_at = payload["saved_at_ms"]
+        if type(saved_at) is not int or saved_at < 0:
+            raise ValueError("stato con timestamp non valido")
+        tripped_at = payload.get("killswitch_tripped_at_ms")
+        if tripped_at is not None and (
+            type(tripped_at) is not int or tripped_at < 0 or tripped_at > saved_at
+        ):
+            raise ValueError("stato con timestamp kill switch non valido")
+        if payload["killswitch_tripped"] != (tripped_at is not None):
+            raise ValueError("stato kill switch incoerente con il timestamp")
+        extra = payload.get("extra", {})
+        if not isinstance(extra, dict):
+            raise ValueError("stato extra non valido")
+        if "risk_day_key" in extra:
+            key = extra["risk_day_key"]
+            if not isinstance(key, str):
+                raise ValueError("stato con giorno di rischio non valido")
+            risk_day = date.fromisoformat(key)
+            if risk_day.isoformat() != key or risk_day > ms_to_datetime(saved_at).date():
+                raise ValueError("stato con giorno di rischio non valido")
+        for name in ("day_start_equity", "peak_equity"):
+            value = Decimal(str(payload[name]))
+            if not value.is_finite() or value < 0:
+                raise ValueError(f"stato con {name} non valido")
         return cls(
             version=version,
             saved_at_ms=int(payload["saved_at_ms"]),
@@ -175,17 +202,25 @@ class StateStore:
         self.saves += 1
         return True
 
-    def load(self) -> BotState | None:
-        """Rilegge lo stato. ``None`` se non esiste o se e' illeggibile.
+    def load(self, *, strict: bool = False) -> BotState | None:
+        """Rilegge lo stato; il runner usa ``strict=True`` per le protezioni.
 
-        Un file corrotto non blocca l'avvio: lo stato vero si ricostruisce
-        comunque dall'exchange. Viene pero' segnalato come errore, perche'
-        significa che l'ultimo salvataggio e' stato interrotto.
+        Un file assente restituisce None. Un file esistente ma illeggibile
+        blocca il runner: i saldi exchange non ricostruiscono halt, massimo
+        storico e piani di uscita. I lettori diagnostici possono usare la
+        modalita' non strict, che registra l'errore e restituisce None.
         """
         if not self.path.is_file():
             return None
         try:
-            return BotState.from_dict(json.loads(self.path.read_text(encoding="utf-8")))
-        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("stato locale non e' un oggetto")
+            return BotState.from_dict(payload)
+        except (KeyError, ValueError, TypeError, ArithmeticError) as exc:
+            if strict:
+                raise ValueError(
+                    "stato locale illeggibile: ripristinare le protezioni prima dell'avvio"
+                ) from exc
             logger.error("stato locale illeggibile (%s): si riparte dall'exchange", exc)
             return None

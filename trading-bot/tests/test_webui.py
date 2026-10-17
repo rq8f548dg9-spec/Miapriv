@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -79,7 +80,15 @@ class TestSicurezza:
         assert "chiave-live-esistente" in content  # le chiavi live restano intatte
         assert content.count(LIVE_KEY_VAR) == 1
 
+    @pytest.mark.skipif(
+        os.name != "posix",
+        reason=(
+            "controlla solo il mode POSIX 600; le ACL Windows reali non sono "
+            "verificate da questo test"
+        ),
+    )
     def test_il_file_env_non_e_leggibile_dagli_altri(self, tmp_path: Path) -> None:
+        """Il mode 600 POSIX non verifica la policy ACL effettiva su Windows."""
         env = tmp_path / ".env"
         assert write_credentials(env, "k" * 32, "s" * 32) == "posix-600"
         assert oct(env.stat().st_mode)[-3:] == "600"

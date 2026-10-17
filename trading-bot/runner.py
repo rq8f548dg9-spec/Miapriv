@@ -130,13 +130,18 @@ class TradingBot:
         # Le monete gia' presenti sul conto si rileggono dallo stato salvato:
         # senza, dopo un riavvio il bot scambierebbe la propria posizione per
         # roba di qualcun altro e smetterebbe di gestirla.
-        saved = self.state_store.load()
+        saved = self.state_store.load(strict=True)
         baseline = (
             {symbol: Decimal(q) for symbol, q in saved.baseline_holdings.items()}
             if saved is not None and saved.baseline_holdings
             else None
         )
         if saved is not None:
+            # I vecchi snapshot v4 non includevano il giorno: il timestamp
+            # del salvataggio e' il riferimento disponibile per la migrazione.
+            self._day_key = saved.extra.get(
+                "risk_day_key", ms_to_datetime(saved.saved_at_ms).strftime("%Y-%m-%d")
+            )
             # Le protezioni si ripristinano: un riavvio non e' un modo per
             # azzerare uno stop, un massimo storico o un drawdown in corso.
             self.risk.killswitch.restore(
@@ -156,8 +161,10 @@ class TradingBot:
             for symbol, piano in saved.exit_plans.items():
                 try:
                     self.active_plans[symbol] = PianoDiUscita.from_dict(symbol, piano)
-                except (KeyError, ValueError, ArithmeticError):
-                    logger.error("piano di uscita illeggibile per %s, ignorato", symbol)
+                except (KeyError, ValueError, TypeError, ArithmeticError) as exc:
+                    raise ValueError(
+                        f"piano di uscita illeggibile per {symbol}: avvio bloccato"
+                    ) from exc
 
         self.reconciler = Reconciler(
             broker=self.broker,
@@ -677,6 +684,8 @@ class TradingBot:
                 exit_plans={
                     symbol: piano.to_dict() for symbol, piano in self.active_plans.items()
                 },
+                risk_day_key=self._day_key or
+                ms_to_datetime(self.clock.now_ms()).strftime("%Y-%m-%d"),
             ),
             force=force,
         )
@@ -713,17 +722,17 @@ class TradingBot:
             iterations += 1
             now_ms = self.clock.now_ms()
 
-            # Il kill switch per primo e in un blocco suo: un guasto in un
-            # altro compito non deve poter impedire il controllo che ferma
-            # il bot. Prima erano tutti nello stesso try, in fila.
-            await self._safely("kill switch", self.check_killswitch())
-
-            # Giorno nuovo, riferimento del drawdown giornaliero nuovo.
-            # Senza questo la soglia giornaliera misura dal primo avvio.
+            # Il giorno va aggiornato prima di valutare la perdita giornaliera:
+            # altrimenti a mezzanotte si applica ancora il limite di ieri.
             day_key = ms_to_datetime(now_ms).strftime("%Y-%m-%d")
             if day_key != self._day_key:
                 self._day_key = day_key
                 self.portfolio.start_new_day(day_key)
+
+            # Il kill switch in un blocco suo: un guasto in un
+            # altro compito non deve poter impedire il controllo che ferma
+            # il bot. Prima erano tutti nello stesso try, in fila.
+            await self._safely("kill switch", self.check_killswitch())
 
             await self._safely("riallineamento book", self.resync_books())
 

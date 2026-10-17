@@ -21,7 +21,7 @@ import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from core.types import Order, OrderStatus, Side, TimestampMs
@@ -84,6 +84,42 @@ def client_order_id(
 
 class DuplicateOrderError(RuntimeError):
     """Tentativo di reinviare un ordine gia' registrato come inviato."""
+
+
+def _validate_record(order_id: object, record: object) -> tuple[Decimal, Decimal]:
+    """Validate the fields needed to recover and reconcile a persisted order."""
+    invalid = ValueError(f"registro ordini malformato: {order_id}")
+    if not isinstance(order_id, str) or not order_id.strip() or not isinstance(record, dict):
+        raise invalid
+    try:
+        symbol = record["symbol"]
+        side = record["side"]
+        status = record["status"]
+        created_at_ms = record["created_at_ms"]
+        exchange_order_id = record["exchange_order_id"]
+        quantity_value = record["quantity"]
+        filled_value = record.get("filled_quantity", "0")
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise invalid
+        if not isinstance(side, str) or not isinstance(status, str):
+            raise invalid
+        Side(side)
+        OrderStatus(status)
+        if type(created_at_ms) is not int or created_at_ms < 0:
+            raise invalid
+        if exchange_order_id is not None and not isinstance(exchange_order_id, str):
+            raise invalid
+        if not isinstance(quantity_value, str) or not isinstance(filled_value, str):
+            raise invalid
+        quantity = Decimal(quantity_value)
+        filled = Decimal(filled_value)
+        if not quantity.is_finite() or not filled.is_finite():
+            raise invalid
+        if quantity <= 0 or filled < 0 or filled > quantity:
+            raise invalid
+    except (KeyError, InvalidOperation, ValueError, TypeError) as exc:
+        raise invalid from exc
+    return quantity, filled
 
 
 @dataclass
@@ -172,7 +208,7 @@ class OrderRegistry:
                 f"ordine {order.client_order_id} gia' registrato (stato {existing}): "
                 "reinvio bloccato, verificare lo stato sull'exchange"
             )
-        self._records[order.client_order_id] = {
+        record: dict[str, object] = {
             "symbol": order.symbol,
             "side": order.side.value,
             "quantity": str(order.quantity),
@@ -181,6 +217,8 @@ class OrderRegistry:
             "exchange_order_id": None,
             "filled_quantity": "0",
         }
+        _validate_record(order.client_order_id, record)
+        self._records[order.client_order_id] = record
         self.save()
 
     def update(
@@ -194,11 +232,22 @@ class OrderRegistry:
         record = self._records.get(client_order_id_value)
         if record is None:
             raise KeyError(f"ordine {client_order_id_value} non registrato")
-        record["status"] = status.value
+        if not isinstance(status, OrderStatus):
+            raise ValueError(f"stato ordine non valido: {status}")
+        previous_status = OrderStatus(str(record["status"]))
+        _, previous_filled = _validate_record(client_order_id_value, record)
+        updated = record.copy()
+        updated["status"] = status.value
         if exchange_order_id is not None:
-            record["exchange_order_id"] = exchange_order_id
+            updated["exchange_order_id"] = exchange_order_id
         if filled_quantity is not None:
-            record["filled_quantity"] = str(filled_quantity)
+            updated["filled_quantity"] = str(filled_quantity)
+        _, current_filled = _validate_record(client_order_id_value, updated)
+        if current_filled < previous_filled:
+            raise ValueError(f"ordine {client_order_id_value}: filled quantity diminuita")
+        if previous_status.is_terminal and not status.is_terminal:
+            raise ValueError(f"ordine {client_order_id_value}: stato terminale non riapribile")
+        self._records[client_order_id_value] = updated
         self.save()
 
     def forget(self, client_order_ids: Iterable[str]) -> int:
@@ -227,6 +276,8 @@ class OrderRegistry:
             raise
         if not isinstance(data, dict):
             raise ValueError(f"registro ordini malformato: {self.path}")
+        for order_id, record in data.items():
+            _validate_record(order_id, record)
         self._records = data
         return len(self._records)
 
