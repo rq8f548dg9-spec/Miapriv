@@ -27,7 +27,19 @@ from core.types import (
     TimestampMs,
 )
 
-__all__ = ["AccountState", "Broker", "BrokerError", "OrderAck", "PaperBroker"]
+__all__ = [
+    "AccountState",
+    "Broker",
+    "BrokerError",
+    "DepthSnapshot",
+    "OrderAck",
+    "PaperBroker",
+]
+
+#: Snapshot REST del book: (lastUpdateId, livelli bid, livelli ask).
+DepthSnapshot = tuple[
+    int, tuple[tuple[Decimal, Decimal], ...], tuple[tuple[Decimal, Decimal], ...]
+]
 
 
 class BrokerError(RuntimeError):
@@ -106,6 +118,16 @@ class Broker(ABC):
     @abstractmethod
     async def recent_fills(self, symbol: str, since_ms: TimestampMs) -> list[Fill]:
         """Esecuzioni recenti sul simbolo, per ricostruire cosa e' accaduto."""
+
+    async def depth_snapshot(
+        self, symbol: str, limit: int = 100
+    ) -> DepthSnapshot | None:
+        """Snapshot REST del book: (lastUpdateId, bid, ask).
+
+        Serve a riallineare il book dopo un buco di sequenza. ``None`` per le
+        implementazioni che non hanno un book da ricostruire.
+        """
+        return None
 
     async def close(self) -> None:
         """Rilascia le risorse. Le implementazioni di rete chiudono la sessione."""

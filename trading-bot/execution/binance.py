@@ -39,7 +39,7 @@ from core.types import (
     TimeInForce,
     TimestampMs,
 )
-from execution.broker import AccountState, Broker, BrokerError, OrderAck
+from execution.broker import AccountState, Broker, BrokerError, DepthSnapshot, OrderAck
 
 __all__ = ["BinanceBroker", "HttpClient", "HttpResponse", "RateLimiter", "parse_symbol_filters"]
 
@@ -402,6 +402,35 @@ class BinanceBroker(Broker):
             )
             for item in payload
         ]
+
+    async def depth_snapshot(
+        self, symbol: str, limit: int = 100
+    ) -> DepthSnapshot | None:
+        """Snapshot del book, per riallineare dopo un buco di sequenza."""
+        payload = await self._request(
+            "GET", "/api/v3/depth", params={"symbol": symbol, "limit": limit}, weight=5
+        )
+        bids = tuple((Decimal(p), Decimal(q)) for p, q in payload["bids"])
+        asks = tuple((Decimal(p), Decimal(q)) for p, q in payload["asks"])
+        return int(payload["lastUpdateId"]), bids, asks
+
+    async def klines(
+        self, symbol: str, interval: str, *, start_ms: TimestampMs, limit: int = 1000
+    ) -> list[list[Any]]:
+        """Candele storiche, per popolare lo store prima di un backtest."""
+        return list(
+            await self._request(
+                "GET",
+                "/api/v3/klines",
+                params={
+                    "symbol": symbol,
+                    "interval": interval,
+                    "startTime": start_ms,
+                    "limit": limit,
+                },
+                weight=2,
+            )
+        )
 
     async def close(self) -> None:
         await self.http.close()
