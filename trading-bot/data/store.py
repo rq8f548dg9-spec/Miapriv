@@ -12,6 +12,7 @@ minuscoli, che poi sono piu' lenti da leggere dei dati stessi.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -24,6 +25,21 @@ from core.types import Candle, TimestampMs, Trade, ms_to_datetime
 __all__ = ["ParquetStore", "day_partition"]
 
 logger = logging.getLogger("trading_bot.store")
+
+
+#: Un simbolo diventa un nome di cartella: deve essere innocuo.
+SYMBOL_PATTERN = re.compile(r"[A-Z0-9]{3,20}")
+
+
+def _checked_symbol(symbol: str) -> str:
+    """Rifiuta i simboli che non possono essere un nome di cartella.
+
+    Senza questo controllo un simbolo come ``X/../../..`` farebbe scrivere
+    il file fuori dalla cartella dei dati, ovunque il processo possa farlo.
+    """
+    if not SYMBOL_PATTERN.fullmatch(symbol):
+        raise ValueError(f"simbolo non valido per la persistenza: {symbol!r}")
+    return symbol
 
 
 def day_partition(ts_ms: TimestampMs) -> str:
@@ -113,7 +129,7 @@ class ParquetStore:
         return written
 
     def _add(self, dataset: str, symbol: str, ts_ms: TimestampMs, row: dict[str, Any]) -> None:
-        key = f"{dataset}|{day_partition(ts_ms)}|{symbol}"
+        key = f"{dataset}|{day_partition(ts_ms)}|{_checked_symbol(symbol)}"
         buffer = self._buffers.setdefault(key, [])
         buffer.append(row)
         if len(buffer) >= self.batch_size:
@@ -126,7 +142,10 @@ class ParquetStore:
         import polars as pl
 
         dataset, day, symbol = key.split("|")
-        directory = self.root / dataset / f"date={day}" / f"symbol={symbol}"
+        directory = self.root / dataset / f"date={day}" / f"symbol={_checked_symbol(symbol)}"
+        # Terza barriera: comunque si sia arrivati qui, si scrive dentro casa.
+        if not directory.resolve().is_relative_to(self.root.resolve()):
+            raise ValueError(f"percorso fuori dalla cartella dei dati: {directory}")
         directory.mkdir(parents=True, exist_ok=True)
         # Il nome include un timestamp di scrittura: due lotti dello stesso
         # giorno non si sovrascrivono a vicenda.

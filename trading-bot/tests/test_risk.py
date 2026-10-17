@@ -69,9 +69,11 @@ def clock() -> SimulatedClock:
 def manager(config: AppConfig, clock: SimulatedClock) -> RiskManager:
     counter = {"n": 0}
 
-    def make_id(symbol: str, side: Side, ts_ms: int) -> str:
+    def make_id(
+        *, symbol: str, side: Side, quantity: Decimal, intent: str, ts_ms: int
+    ) -> str:
         counter["n"] += 1
-        return f"{symbol}-{side.value}-{ts_ms}-{counter['n']}"
+        return f"{symbol}-{side.value}-{intent}-{quantity}-{ts_ms}-{counter['n']}"
 
     return RiskManager.from_config(config, clock, make_id)
 

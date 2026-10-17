@@ -73,15 +73,15 @@ class TestSicurezza:
     ) -> None:
         env = tmp_path / ".env"
         env.write_text(f"{LIVE_KEY_VAR}=chiave-live-esistente\n", encoding="utf-8")
-        write_credentials(env, "k", "s")
+        write_credentials(env, "k" * 32, "s" * 32)
         content = env.read_text(encoding="utf-8")
-        assert f"{TESTNET_KEY_VAR}=k" in content
+        assert f"{TESTNET_KEY_VAR}={'k' * 32}" in content
         assert "chiave-live-esistente" in content  # le chiavi live restano intatte
         assert content.count(LIVE_KEY_VAR) == 1
 
     def test_il_file_env_non_e_leggibile_dagli_altri(self, tmp_path: Path) -> None:
         env = tmp_path / ".env"
-        write_credentials(env, "k", "s")
+        write_credentials(env, "k" * 32, "s" * 32)
         assert oct(env.stat().st_mode)[-3:] == "600"
 
     def test_chiavi_vuote_rifiutate(self, tmp_path: Path) -> None:
@@ -90,8 +90,8 @@ class TestSicurezza:
 
     def test_chiavi_con_a_capo_rifiutate(self, tmp_path: Path) -> None:
         """Un a capo spezzerebbe il file .env in righe incoerenti."""
-        with pytest.raises(UiError, match="a capo"):
-            write_credentials(tmp_path / ".env", "k\nALTRO=x", "s")
+        with pytest.raises(UiError, match="non valida"):
+            write_credentials(tmp_path / ".env", "k" * 20 + "\nALTRO=x", "s" * 20)
 
 
 class TestModificaConfig:
@@ -392,3 +392,143 @@ class TestFinestraDelBacktest:
                     break
         assert payload["lavoro"]["stato"] == "fallito"
         assert "passo 2" in payload["lavoro"]["messaggio"]
+
+
+class TestRichiesteDaAltriSiti:
+    """Il pannello non chiede password: chiunque abbia accesso al computer lo
+    usa. Questo pero' vale anche per una pagina web aperta nel browser, che
+    puo' inviare richieste a 127.0.0.1 a insaputa di chi naviga."""
+
+    @pytest.mark.asyncio
+    async def test_una_pagina_esterna_non_puo_avviare_il_bot(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        response = await client.post(
+            "/api/avvia", headers={"Origin": "https://sito-malevolo.example"}
+        )
+        assert response.status == 403
+        assert "altro sito" in (await response.json())["errore"]
+
+    @pytest.mark.asyncio
+    async def test_una_pagina_esterna_non_puo_chiudere_le_posizioni(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        response = await client.post(
+            "/api/chiudi-tutto", headers={"Origin": "https://sito-malevolo.example"}
+        )
+        assert response.status == 403
+
+    @pytest.mark.asyncio
+    async def test_blocca_anche_la_scrittura_delle_chiavi(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        response = await client.post(
+            "/api/credenziali",
+            json={"api_key": "k", "api_secret": "s"},
+            headers={"Origin": "https://sito-malevolo.example"},
+        )
+        assert response.status == 403
+
+    @pytest.mark.asyncio
+    async def test_blocca_un_invio_da_modulo_html(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        """Un form su un sito esterno non richiede preflight: e' la via
+        d'attacco piu' concreta, e va chiusa dall'intestazione del browser."""
+        response = await client.post(
+            "/api/ferma",
+            data="qualunque=cosa",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Sec-Fetch-Site": "cross-site",
+            },
+        )
+        assert response.status == 403
+
+    @pytest.mark.asyncio
+    async def test_il_pannello_stesso_funziona(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        """Le richieste della pagina portano Sec-Fetch-Site: same-origin."""
+        response = await client.post(
+            "/api/ferma", headers={"Sec-Fetch-Site": "same-origin"}
+        )
+        assert response.status == 200
+
+    @pytest.mark.asyncio
+    async def test_le_letture_restano_libere(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        """Una GET da un altro sito non puo' leggere la risposta (niente CORS),
+        quindi non serve bloccarla e rompere i segnalibri."""
+        response = await client.get(
+            "/api/stato", headers={"Origin": "https://sito-esterno.example"}
+        )
+        assert response.status == 200
+
+
+class TestScritturaDelleChiavi:
+    """Il file .env contiene la variabile che autorizza il denaro reale: chi
+    riesce a scriverci una riga arbitraria disarma la guardia del progetto."""
+
+    @pytest.mark.parametrize(
+        "separatore",
+        # I caratteri su cui str.splitlines() spezza oltre a \n e \r.
+        ["\x85", "\u2028", "\u2029", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e"],
+    )
+    def test_nessun_separatore_di_riga_passa(
+        self, tmp_path: Path, separatore: str
+    ) -> None:
+        """str.splitlines() spezza su molti caratteri oltre a \\n e \\r: un
+        controllo che ne blocca due su dieci non e' un controllo."""
+        veleno = f"AAA{separatore}I_UNDERSTAND_LIVE_TRADING_RISK=yes"
+        with pytest.raises(UiError):
+            write_credentials(tmp_path / ".env", veleno, "BBB")
+
+    def test_la_guardia_sul_denaro_reale_non_finisce_nel_file(
+        self, tmp_path: Path
+    ) -> None:
+        env = tmp_path / ".env"
+        with pytest.raises(UiError):
+            write_credentials(
+                env, "AAA\x85I_UNDERSTAND_LIVE_TRADING_RISK=yes", "BBB"
+            )
+        testo = env.read_text(encoding="utf-8") if env.exists() else ""
+        assert "I_UNDERSTAND_LIVE_TRADING_RISK" not in testo
+
+    def test_una_chiave_normale_viene_accettata(self, tmp_path: Path) -> None:
+        env = tmp_path / ".env"
+        write_credentials(env, "a" * 64, "b" * 64)
+        assert f"{TESTNET_KEY_VAR}={'a' * 64}" in env.read_text(encoding="utf-8")
+
+    def test_una_chiave_troppo_corta_viene_rifiutata(self, tmp_path: Path) -> None:
+        with pytest.raises(UiError):
+            write_credentials(tmp_path / ".env", "corta", "b" * 64)
+
+    def test_caratteri_strani_rifiutati(self, tmp_path: Path) -> None:
+        with pytest.raises(UiError):
+            write_credentials(tmp_path / ".env", "chiave con spazi " + "a" * 50, "b" * 64)
+
+
+class TestIndirizzoDelPannello:
+    """Una pagina esterna puo' far risolvere il proprio nome a 127.0.0.1
+    (DNS rebinding): a quel punto il browser la considera stessa origine e i
+    controlli su Origin non bastano piu'. Resta il nome usato per chiamarci."""
+
+    @pytest.mark.asyncio
+    async def test_un_host_estraneo_viene_rifiutato(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        response = await client.post(
+            "/api/ferma",
+            headers={"Host": "sito-malevolo.example:8777", "Sec-Fetch-Site": "same-origin"},
+        )
+        assert response.status == 403
+
+    @pytest.mark.asyncio
+    async def test_localhost_e_ammesso(self, client: TestClient[Any, Any]) -> None:
+        port = client.server.port
+        response = await client.post(
+            "/api/ferma", headers={"Host": f"localhost:{port}"}
+        )
+        assert response.status == 200

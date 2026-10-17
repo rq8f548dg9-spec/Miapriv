@@ -215,3 +215,93 @@ class TestStato:
     async def test_la_riconciliazione_periodica_gira(self, bot: TradingBot) -> None:
         await bot.periodic_reconcile()
         assert bot.reconciler.history
+
+
+class TestBaseDelleMonete:
+    """Il bot deve gestire solo cio' che ha comprato lui, anche dopo un riavvio."""
+
+    def _bot(self, config: AppConfig, tmp_path: Path, clock: SimulatedClock) -> TradingBot:
+        broker = PaperBroker(
+            clock=clock,
+            costs=CostModel(CostsConfig()),
+            filters={"BTCUSDT": filters_for("BTCUSDT")},
+            balances={"USDT": D("200")},
+        )
+        return TradingBot(
+            config=config,
+            clock=clock,
+            broker=broker,
+            generator=AlwaysTradingGenerator(),
+            portfolio=Portfolio(D("200")),
+            registry=OrderRegistry(tmp_path / "orders.json"),
+            alerts=AlertManager(clock),
+            decision_log=DecisionLogger(mode="test"),
+            state_store=StateStore(tmp_path / "state.json", clock, mode="test"),
+            store=None,
+        )
+
+    def test_senza_stato_salvato_la_base_e_da_stabilire(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        bot = self._bot(config, tmp_path, SimulatedClock(NOW))
+        assert bot.reconciler.baseline_holdings is None
+
+    def test_la_base_salvata_viene_riletta_allavvio(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        """Senza rilettura, dopo un riavvio la posizione del bot sparirebbe."""
+        clock = SimulatedClock(NOW)
+        primo = self._bot(config, tmp_path, clock)
+        primo.reconciler.baseline_holdings = {"BTCUSDT": D("1.25")}
+        primo.snapshot_state(force=True)
+
+        secondo = self._bot(config, tmp_path, clock)
+        assert secondo.reconciler.baseline_holdings == {"BTCUSDT": D("1.25")}
+
+    def test_la_base_finisce_nello_snapshot(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        bot = self._bot(config, tmp_path, SimulatedClock(NOW))
+        bot.reconciler.baseline_holdings = {"BTCUSDT": D("2")}
+        bot.snapshot_state(force=True)
+        saved = bot.state_store.load()
+        assert saved is not None
+        assert saved.baseline_holdings == {"BTCUSDT": "2"}
+
+
+class TestTracciabilita:
+    """Senza un identificativo comune non si puo' risalire dall'ordine
+    eseguito alla decisione che lo ha prodotto, e l'autopsia salta."""
+
+    @pytest.mark.asyncio
+    async def test_lordine_inviato_porta_lid_della_decisione(
+        self, bot: TradingBot
+    ) -> None:
+        feed_candles(bot, 300)
+        order = await bot.evaluate_symbol("BTCUSDT")
+        assert order is not None
+
+        decisione = bot.risk.decisions[-1]
+        assert decisione.order is not None
+        assert decisione.order.client_order_id == order.client_order_id
+        assert order.client_order_id in bot.registry
+
+        fill = bot.broker.fills[-1]  # type: ignore[attr-defined]
+        assert fill.client_order_id == order.client_order_id
+
+    @pytest.mark.asyncio
+    async def test_lid_dipende_dalla_quantita(self, bot: TradingBot) -> None:
+        """Due decisioni diverse non devono condividere l'identificativo."""
+        from decimal import Decimal
+
+        from core.types import Side
+
+        primo = bot.risk.client_order_id_factory(
+            symbol="BTCUSDT", side=Side.BUY, quantity=Decimal("0.001"),
+            intent="OPEN", ts_ms=NOW,
+        )
+        secondo = bot.risk.client_order_id_factory(
+            symbol="BTCUSDT", side=Side.BUY, quantity=Decimal("0.002"),
+            intent="OPEN", ts_ms=NOW,
+        )
+        assert primo != secondo

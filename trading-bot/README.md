@@ -7,7 +7,7 @@ onestamente** se una strategia funziona, non per confermare che funzioni.
 > dimostrato dai dati, al netto dei costi di transazione.
 
 Stato: tutte e 8 le fasi implementate, più un pannello di controllo nel
-browser. 433 test, `mypy --strict` e `ruff` puliti. Il modello ML resta un
+browser. 476 test, `mypy --strict` e `ruff` puliti. Il modello ML resta un
 segnaposto dichiarato: si implementa solo se la baseline a regole regge i
 costi nel backtest.
 
@@ -72,7 +72,7 @@ cd trading-bot
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-pytest && mypy . && ruff check .      # 433 test
+pytest && mypy . && ruff check .      # 476 test
 
 cp .env.example .env                   # poi incolla le chiavi testnet
 python -m main --check                 # valida la configurazione
@@ -202,6 +202,29 @@ viene riletta a ogni calcolo: è lineare nel numero di trade in finestra, e su
 un simbolo molto attivo porta il singolo vettore da 80 a 700 microsecondi.
 Diventerebbe un problema solo sopra la decina di simboli attivi insieme, e la
 soluzione nota è tenere le somme in modo incrementale invece di riscorrere.
+
+## Sicurezza
+
+Il pannello non ha password: ascolta solo su `127.0.0.1`, quindi per usarlo
+serve già accesso al computer. Il browser però è un ponte verso quell'indirizzo,
+e le difese stanno lì:
+
+- **comandi solo dalla propria pagina**: le richieste che cambiano stato
+  (avvio, arresto, chiusura posizioni, chiavi, configurazione) vengono rifiutate
+  se arrivano da un altro sito, controllando `Sec-Fetch-Site` e `Origin`;
+- **solo 127.0.0.1 e localhost** sono nomi accettati nell'intestazione `Host`:
+  chiude il DNS rebinding, con cui un dominio esterno si farebbe passare per
+  locale;
+- **le chiavi API sono validate in positivo** (solo lettere, cifre, trattini,
+  16–128 caratteri). Vietare «a capo» non bastava: `splitlines()` spezza anche
+  su `\x85` e `U+2028`, e una chiave con uno di quei caratteri avrebbe scritto
+  una riga in più nel `.env` — per esempio proprio
+  `I_UNDERSTAND_LIVE_TRADING_RISK=yes`;
+- **i simboli che arrivano dal flusso di mercato sono validati** prima di
+  diventare nomi di cartella o testo nella pagina, e la pagina scrive come
+  testo ogni dato che riceve dall'API;
+- **la modalità non è modificabile dal pannello**, verificato sul risultato e
+  non solo sull'intenzione.
 
 ## Scelte che vale la pena conoscere
 

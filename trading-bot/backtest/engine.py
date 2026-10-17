@@ -280,5 +280,7 @@ class BacktestEngine:
         return 365.0 * 24 * 60 * 60 * 1000 / duration_ms
 
     @staticmethod
-    def _client_order_id(symbol: str, side: Side, ts_ms: TimestampMs) -> str:
-        return f"bt-{symbol}-{side.value}-{ts_ms}"
+    def _client_order_id(
+        *, symbol: str, side: Side, quantity: Decimal, intent: str, ts_ms: TimestampMs
+    ) -> str:
+        return f"bt-{symbol}-{side.value}-{intent}-{quantity}-{ts_ms}"

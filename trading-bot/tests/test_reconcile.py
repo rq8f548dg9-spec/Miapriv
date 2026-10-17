@@ -15,7 +15,16 @@ import pytest
 from config.schema import load_config
 from core.clock import SimulatedClock
 from core.portfolio import Portfolio
-from core.types import Fill, Order, OrderStatus, OrderType, Side, SymbolFilters, TimestampMs
+from core.types import (
+    Fill,
+    Order,
+    OrderStatus,
+    OrderType,
+    Position,
+    Side,
+    SymbolFilters,
+    TimestampMs,
+)
 from execution.broker import AccountState, Broker, OrderAck
 from execution.idempotency import OrderRegistry, client_order_id
 from execution.reconcile import Reconciler
@@ -109,6 +118,14 @@ def pending_order(ts: int = NOW) -> Order:
 
 
 def reconciler(broker: Broker, registry: OrderRegistry, **kwargs: object) -> Reconciler:
+    """Riconciliatore con base nota e vuota.
+
+    Equivale a un bot gia' avviato in passato che sa di non aver trovato
+    nulla sul conto: e' lo scenario in cui le posizioni sull'exchange sono
+    effettivamente sue. Il caso "primo avvio su un conto gia' pieno" ha la
+    sua classe di test dedicata, TestSaldiPreesistenti.
+    """
+    kwargs.setdefault("baseline_holdings", {})
     return Reconciler(
         broker=broker,
         registry=registry,
@@ -323,9 +340,11 @@ class TestFullRestartScenario:
             statuses={order.client_order_id: filled_ack(order.client_order_id)},
         )
 
-        # --- riavvio: registro riletto, stato ricostruito dall'exchange
+        # --- riavvio: registro riletto, stato ricostruito dall'exchange.
+        # La base arriva dallo stato salvato: il conto era vuoto all'inizio,
+        # quindi lo 0.001 BTC che c'e' adesso lo ha comprato il bot.
         registry = OrderRegistry(path)
-        rec = reconciler(broker, registry)
+        rec = reconciler(broker, registry, baseline_holdings={"BTCUSDT": D("0")})
         resolved, fills = await rec.resolve_pending_orders()
         portfolio = await rec.rebuild_portfolio(prices={"BTCUSDT": D("60000")})
 
@@ -401,3 +420,83 @@ class TestTettoDiCapitale:
         portfolio = await rec.rebuild_portfolio(prices={})
         result = await rec.reconcile(portfolio, now_ms=NOW)
         assert result.is_consistent
+
+
+class TestSaldiPreesistenti:
+    """Il conto non e' vuoto quando il bot arriva.
+
+    La testnet accredita monete di prova (1 BTC, 1 ETH...), e un conto reale
+    puo' contenere monete comprate a mano. Il bot deve gestire solo cio' che
+    ha comprato lui: adottare il resto significa calcolare drawdown su un
+    capitale che non controlla e, al primo segnale di uscita, vendere roba
+    che non e' sua.
+    """
+
+    @pytest.mark.asyncio
+    async def test_le_monete_gia_presenti_non_diventano_sue(self) -> None:
+        broker = StubBroker(balances={"USDT": D("15000"), "BTC": D("1")})
+        rec = Reconciler(
+            broker=broker,
+            registry=OrderRegistry(),
+            symbols=("BTCUSDT",),
+            max_capital=D("200"),
+        )
+        portfolio = await rec.rebuild_portfolio(prices={"BTCUSDT": D("60000")})
+
+        assert portfolio.positions.get("BTCUSDT", Position("BTCUSDT")).is_flat
+        assert portfolio.equity == D("200")
+
+    @pytest.mark.asyncio
+    async def test_la_quota_comprata_dal_bot_resta_sua(self) -> None:
+        """Dopo un riavvio il bot deve ritrovare la propria posizione."""
+        broker = StubBroker(balances={"USDT": D("15000"), "BTC": D("1.0005")})
+        rec = Reconciler(
+            broker=broker,
+            registry=OrderRegistry(),
+            symbols=("BTCUSDT",),
+            max_capital=D("200"),
+            baseline_holdings={"BTCUSDT": D("1")},
+        )
+        portfolio = await rec.rebuild_portfolio(prices={"BTCUSDT": D("60000")})
+        assert portfolio.positions["BTCUSDT"].quantity == D("0.0005")
+
+    @pytest.mark.asyncio
+    async def test_la_base_viene_stabilita_al_primo_avvio(self) -> None:
+        broker = StubBroker(balances={"USDT": D("200"), "BTC": D("2"), "ETH": D("3")})
+        rec = Reconciler(
+            broker=broker,
+            registry=OrderRegistry(),
+            symbols=("BTCUSDT", "ETHUSDT"),
+        )
+        await rec.rebuild_portfolio(prices={"BTCUSDT": D("60000"), "ETHUSDT": D("3000")})
+        assert rec.baseline_holdings == {"BTCUSDT": D("2"), "ETHUSDT": D("3")}
+
+    @pytest.mark.asyncio
+    async def test_la_riconciliazione_confronta_al_netto_della_base(self) -> None:
+        """Con la base sottratta, un conto pre-caricato non e' una divergenza."""
+        broker = StubBroker(balances={"USDT": D("15000"), "BTC": D("1")})
+        rec = Reconciler(
+            broker=broker,
+            registry=OrderRegistry(),
+            symbols=("BTCUSDT",),
+            max_capital=D("200"),
+            baseline_holdings={"BTCUSDT": D("1")},
+        )
+        result = await rec.reconcile(Portfolio(D("200")), now_ms=NOW)
+        assert result.is_consistent
+
+    @pytest.mark.asyncio
+    async def test_se_il_saldo_scende_sotto_la_base_la_base_si_abbassa(self) -> None:
+        """Se l'utente vende a mano, il bot non puo' ritrovarsi una posizione
+        negativa: abbassa il riferimento e lo dice."""
+        broker = StubBroker(balances={"USDT": D("200"), "BTC": D("0.4")})
+        rec = Reconciler(
+            broker=broker,
+            registry=OrderRegistry(),
+            symbols=("BTCUSDT",),
+            baseline_holdings={"BTCUSDT": D("1")},
+        )
+        portfolio = await rec.rebuild_portfolio(prices={"BTCUSDT": D("60000")})
+        assert portfolio.positions.get("BTCUSDT", Position("BTCUSDT")).is_flat
+        assert rec.baseline_holdings is not None
+        assert rec.baseline_holdings["BTCUSDT"] == D("0.4")

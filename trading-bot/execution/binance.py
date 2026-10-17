@@ -517,7 +517,9 @@ class AiohttpClient:
         except TimeoutError as exc:
             # Un timeout si comporta come un 5xx: la richiesta puo' essere
             # arrivata comunque, quindi il reinvio deve restare idempotente.
-            raise BrokerError(f"timeout su {method} {url}") from exc
+            # Nel messaggio va solo il percorso: la query contiene la firma
+            # HMAC e i parametri, e questo testo finisce nel pannello.
+            raise BrokerError(f"timeout su {method} {url.split('?', 1)[0]}") from exc
 
     async def close(self) -> None:
         if self._session is not None:

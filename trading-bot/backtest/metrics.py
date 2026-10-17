@@ -18,10 +18,22 @@ from decimal import Decimal
 
 from core.portfolio import TradeResult
 
-__all__ = ["PerformanceMetrics", "compute_metrics", "risk_of_ruin"]
+__all__ = [
+    "MIN_TRADES_FOR_VERDICT",
+    "PerformanceMetrics",
+    "Verdict",
+    "assess",
+    "compute_metrics",
+    "risk_of_ruin",
+]
 
 #: Osservazioni minime sotto le quali Sharpe e Sortino non vengono calcolati.
 MIN_SAMPLES_FOR_RATIO = 30
+
+#: Operazioni minime sotto le quali non si esprime un giudizio. Con dieci
+#: operazioni anche un +3% e' compatibile con la fortuna: dirlo "promosso"
+#: o "bocciato" sarebbe inventare un'informazione che i dati non contengono.
+MIN_TRADES_FOR_VERDICT = 20
 
 
 def risk_of_ruin(win_rate: float, payoff_ratio: float, capital_units: float) -> float:
@@ -87,15 +99,68 @@ class PerformanceMetrics:
     def is_viable(self) -> bool:
         """Soglia minima di decenza, non di bonta'.
 
-        Serve a rispondere a una sola domanda: la baseline regge i costi? Se
-        qui e' falso, non ha senso passare al modello predittivo.
+        Delega ad ``assess`` per non avere due giudizi che possono
+        contraddirsi: e' successo davvero, con un +2,6% su 14 operazioni
+        annunciato come "non regge i costi".
         """
-        return (
-            self.trades >= 20
-            and self.total_return > 0
-            and self.expectancy > 0
-            and (self.profit_factor is None or self.profit_factor > 1.0)
+        return assess(self).outcome == "positivo"
+
+
+@dataclass(frozen=True, slots=True)
+class Verdict:
+    """Giudizio su un backtest, con il motivo in chiaro.
+
+    Tre esiti e non due: "insufficiente" non e' una bocciatura, e' l'assenza
+    di dati per esprimersi. Confonderlo con "negativo" porta a scartare una
+    strategia che non e' mai stata misurata.
+    """
+
+    outcome: str
+    explanation: str
+
+    @property
+    def is_conclusive(self) -> bool:
+        return self.outcome != "insufficiente"
+
+
+def assess(metrics: PerformanceMetrics) -> Verdict:
+    """Traduce le metriche in un giudizio motivato."""
+    if metrics.trades < MIN_TRADES_FOR_VERDICT:
+        return Verdict(
+            "insufficiente",
+            f"solo {metrics.trades} operazioni: troppo poche per concludere qualcosa, "
+            f"ne servono almeno {MIN_TRADES_FOR_VERDICT}. Il rendimento di "
+            f"{metrics.total_return:+.2%} su questo campione è compatibile con il caso.",
         )
+    if metrics.total_return <= 0:
+        return Verdict(
+            "negativo",
+            f"rendimento {metrics.total_return:+.2%} su {metrics.trades} operazioni: "
+            "la strategia non copre i costi di transazione.",
+        )
+    if metrics.expectancy <= 0:
+        return Verdict(
+            "negativo",
+            f"il guadagno medio per operazione e' {metrics.expectancy:+.4f}: "
+            "negativo, quindi più opera e più perde.",
+        )
+    if metrics.profit_factor is not None and metrics.profit_factor <= 1.0:
+        return Verdict(
+            "negativo",
+            f"profit factor {metrics.profit_factor:.2f}: le perdite pesano quanto "
+            "o più dei guadagni.",
+        )
+
+    riserva = (
+        " Il campione resta piccolo: serve una verifica walk-forward su più finestre."
+        if metrics.trades < 100
+        else ""
+    )
+    return Verdict(
+        "positivo",
+        f"rendimento {metrics.total_return:+.2%} su {metrics.trades} operazioni, "
+        f"al netto di {metrics.total_fees} di commissioni.{riserva}",
+    )
 
 
 def compute_metrics(

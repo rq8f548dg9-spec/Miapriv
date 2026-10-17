@@ -287,3 +287,67 @@ class TestWalkForward:
         assert seen
         for (_, train_end), window_result in zip(seen, report.windows, strict=False):
             assert train_end < window_result.window.test_start_ms
+
+
+class TestVerdetto:
+    """Un rendimento positivo su pochissime operazioni non e' una bocciatura,
+    ma non e' nemmeno una promozione: va detto quale dei due casi e'."""
+
+    def _metrics(self, *, trades: int, ret: float, expectancy: str = "0.5"):  # type: ignore[no-untyped-def]
+        from backtest.metrics import PerformanceMetrics
+
+        return PerformanceMetrics(
+            periods=14_000,
+            trades=trades,
+            total_return=ret,
+            sharpe=None,
+            sortino=None,
+            max_drawdown=0.0008,
+            win_rate=0.6,
+            profit_factor=1.4,
+            expectancy=D(expectancy),
+            average_win=D("1"),
+            average_loss=D("0.5"),
+            gross_profit=D("10"),
+            gross_loss=D("7"),
+            total_fees=D("0.37"),
+            risk_of_ruin_estimate=None,
+        )
+
+    def test_poche_operazioni_non_sono_una_bocciatura(self) -> None:
+        """Il caso visto dal pannello: +2,60% su 14 operazioni."""
+        from backtest.metrics import assess
+
+        verdict = assess(self._metrics(trades=14, ret=0.026))
+        assert verdict.outcome == "insufficiente"
+        assert not verdict.is_conclusive
+        assert "14" in verdict.explanation
+        assert "non regge i costi" not in verdict.explanation.lower()
+
+    def test_rendimento_negativo_e_una_bocciatura(self) -> None:
+        from backtest.metrics import assess
+
+        verdict = assess(self._metrics(trades=120, ret=-0.04))
+        assert verdict.outcome == "negativo"
+        assert verdict.is_conclusive
+
+    def test_campione_ampio_e_positivo(self) -> None:
+        from backtest.metrics import assess
+
+        verdict = assess(self._metrics(trades=150, ret=0.03))
+        assert verdict.outcome == "positivo"
+
+    def test_guadagno_medio_negativo_bocciato(self) -> None:
+        from backtest.metrics import assess
+
+        verdict = assess(self._metrics(trades=150, ret=0.01, expectancy="-0.2"))
+        assert verdict.outcome == "negativo"
+        assert "operazione" in verdict.explanation
+
+    def test_is_viable_resta_coerente_col_verdetto(self) -> None:
+        """Una sola fonte di verita': niente due giudizi che si contraddicono."""
+        from backtest.metrics import assess
+
+        for trades, ret in ((14, 0.026), (150, 0.03), (150, -0.01)):
+            metrics = self._metrics(trades=trades, ret=ret)
+            assert metrics.is_viable == (assess(metrics).outcome == "positivo")

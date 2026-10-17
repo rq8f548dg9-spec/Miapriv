@@ -52,7 +52,12 @@ def load_dotenv(path: str | Path = ".env", *, override: bool = False) -> int:
         return 0
 
     written = 0
-    for line in env_path.read_text(encoding="utf-8").splitlines():
+    # split("\n") e non splitlines(): quest'ultimo spezza anche su \x85,
+    # \u2028 e altri caratteri, trasformando un valore che li contiene in
+    # righe aggiuntive. Un file .env non ha mai righe separate da quei
+    # caratteri, e trattarli come testo normale toglie la via d'attacco.
+    for raw_line in env_path.read_text(encoding="utf-8").split("\n"):
+        line = raw_line.rstrip("\r")
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue

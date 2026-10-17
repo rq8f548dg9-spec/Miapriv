@@ -105,6 +105,15 @@ class TradingBot:
     def __post_init__(self) -> None:
         self.features = FeatureEngine(self.config.features)
         self.risk = RiskManager.from_config(self.config, self.clock, self._next_order_id)
+        # Le monete gia' presenti sul conto si rileggono dallo stato salvato:
+        # senza, dopo un riavvio il bot scambierebbe la propria posizione per
+        # roba di qualcun altro e smetterebbe di gestirla.
+        saved = self.state_store.load()
+        baseline = (
+            {symbol: Decimal(q) for symbol, q in saved.baseline_holdings.items()}
+            if saved is not None and saved.baseline_holdings
+            else None
+        )
         self.reconciler = Reconciler(
             broker=self.broker,
             registry=self.registry,
@@ -112,6 +121,7 @@ class TradingBot:
             quote_asset=self.config.quote_asset,
             symbols=tuple(s.symbol for s in self.config.enabled_symbols),
             max_capital=self.config.capital_quote,
+            baseline_holdings=baseline,
         )
         for symbol_config in self.config.enabled_symbols:
             self.books[symbol_config.symbol] = OrderBookState(
@@ -120,15 +130,21 @@ class TradingBot:
 
     # -- identificatori ---------------------------------------------------
 
-    def _next_order_id(self, symbol: str, side: Side, ts_ms: TimestampMs) -> str:
-        return client_order_id(
-            symbol=symbol, side=side, quantity=Decimal(0), decision_ts_ms=ts_ms, intent="auto"
-        )
-
     @staticmethod
-    def _order_id_for(order_symbol: str, side: Side, quantity: Decimal, ts_ms: int) -> str:
+    def _next_order_id(
+        *, symbol: str, side: Side, quantity: Decimal, intent: str, ts_ms: TimestampMs
+    ) -> str:
+        """Identificativo deterministico, uguale nella decisione e nell'invio.
+
+        Averne due diversi spezzava il filo fra la riga di log che motiva
+        l'ordine e l'ordine che l'exchange ha ricevuto.
+        """
         return client_order_id(
-            symbol=order_symbol, side=side, quantity=quantity, decision_ts_ms=ts_ms
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            decision_ts_ms=ts_ms,
+            intent=intent,
         )
 
     # -- avvio ------------------------------------------------------------
@@ -153,6 +169,10 @@ class TradingBot:
             prices = await self._initial_prices()
             self.portfolio = await self.reconciler.rebuild_portfolio(prices=prices)
             self.last_prices.update(prices)
+            # La base appena stabilita va salvata prima di qualunque ordine:
+            # un crash qui la perderebbe, e al riavvio il bot adotterebbe
+            # come propria la posizione che sta per aprire.
+            self.snapshot_state(force=True)
 
         self.decision_log.log_equity(self.clock.now_ms(), self.portfolio.equity, evento="avvio")
 
@@ -263,22 +283,12 @@ class TradingBot:
         return decision.order
 
     async def submit(self, order: Order) -> None:
-        """Invia un ordine passando dal registro: niente duplicati, mai."""
-        deterministic = Order(
-            client_order_id=self._order_id_for(
-                order.symbol, order.side, order.quantity, order.created_at_ms
-            ),
-            symbol=order.symbol,
-            side=order.side,
-            order_type=order.order_type,
-            quantity=order.quantity,
-            created_at_ms=order.created_at_ms,
-            price=order.price,
-            time_in_force=order.time_in_force,
-            reduce_only=order.reduce_only,
-            signal_ts_ms=order.signal_ts_ms,
-            metadata=order.metadata,
-        )
+        """Invia un ordine passando dal registro: niente duplicati, mai.
+
+        L'ordine viaggia con l'identificativo che gli ha dato il risk manager:
+        e' lo stesso che compare nella decisione registrata nei log.
+        """
+        deterministic = order
         try:
             self.registry.reserve(deterministic)
         except DuplicateOrderError as exc:
@@ -368,7 +378,12 @@ class TradingBot:
 
     def snapshot_state(self, *, force: bool = False) -> bool:
         return self.state_store.save(
-            self.state_store.capture(self.portfolio, self.risk.killswitch), force=force
+            self.state_store.capture(
+                self.portfolio,
+                self.risk.killswitch,
+                baseline_holdings=self.reconciler.baseline_holdings,
+            ),
+            force=force,
         )
 
     # -- ciclo principale --------------------------------------------------

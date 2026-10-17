@@ -26,6 +26,7 @@ from core.types import (
     BookLevel,
     Candle,
     OrderBookSnapshot,
+    Side,
     SignalDirection,
     TimestampMs,
     Trade,
@@ -186,9 +187,12 @@ def misura_decisione(config: AppConfig) -> Misura:
         )
 
     generatore = GeneratoreDiProva()
-    risk = RiskManager.from_config(
-        config, clock, lambda s, side, ts: f"bench-{s}-{side.value}-{ts}"
-    )
+    def order_id(
+        *, symbol: str, side: Side, quantity: Decimal, intent: str, ts_ms: TimestampMs
+    ) -> str:
+        return f"bench-{symbol}-{side.value}-{intent}-{quantity}-{ts_ms}"
+
+    risk = RiskManager.from_config(config, clock, order_id)
     portfolio = Portfolio(Decimal("200"))
     portfolio.update_mark("BTCUSDT", Decimal("60000"))
     filtri = default_filters("BTCUSDT", fetched_at_ms=START)

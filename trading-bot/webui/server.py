@@ -24,14 +24,17 @@ import logging
 import os
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 from aiohttp import web
 
 from backtest.engine import BacktestEngine
+from backtest.metrics import assess
 from config.credentials import (
     TESTNET_KEY_VAR,
     TESTNET_SECRET_VAR,
@@ -44,7 +47,13 @@ from data.store import ParquetStore
 from monitoring.logger import to_jsonable
 from runner import TradingBot, build_bot, build_generator
 
-__all__ = ["BotSupervisor", "create_app", "friendly_validation_message", "run_ui"]
+__all__ = [
+    "BotSupervisor",
+    "create_app",
+    "friendly_validation_message",
+    "run_ui",
+    "same_origin_only",
+]
 
 logger = logging.getLogger("trading_bot.webui")
 
@@ -321,6 +330,11 @@ def _error(message: str, status: int = 400) -> web.Response:
 
 
 async def _read_json(request: web.Request) -> dict[str, Any]:
+    # aiohttp non controlla il content-type in .json(): senza questo, un
+    # modulo HTML di un altro sito (che puo' inviare solo text/plain) sarebbe
+    # una richiesta valida per gli endpoint che leggono un corpo.
+    if request.content_type != "application/json":
+        raise UiError("richiesta non valida: atteso un corpo JSON")
     try:
         payload = await request.json()
     except json.JSONDecodeError as exc:
@@ -330,6 +344,11 @@ async def _read_json(request: web.Request) -> dict[str, Any]:
     return payload
 
 
+#: Forma ammessa per una chiave API Binance. Tutto cio' che non rientra
+#: qui non e' una chiave, e non deve finire in un file di configurazione.
+_CHIAVE_VALIDA = re.compile(r"[A-Za-z0-9_-]{16,128}")
+
+
 def write_credentials(env_path: Path, api_key: str, api_secret: str) -> None:
     """Scrive le chiavi testnet in ``.env``, preservando le altre righe.
 
@@ -337,8 +356,19 @@ def write_credentials(env_path: Path, api_key: str, api_secret: str) -> None:
     """
     if not api_key or not api_secret:
         raise UiError("chiave e segreto sono entrambi obbligatori")
-    if any(c in api_key + api_secret for c in "\n\r"):
-        raise UiError("le chiavi non possono contenere a capo")
+
+    # Validazione positiva, non lista nera. Vietare "\n" e "\r" non basta:
+    # str.splitlines(), che rilegge il file, spezza anche su \x85, \u2028 e
+    # altri sei caratteri. Una chiave che ne contiene uno diventerebbe una
+    # riga in piu' nel .env, e quella riga puo' essere
+    # I_UNDERSTAND_LIVE_TRADING_RISK=yes, cioe' la guardia sul denaro reale
+    # disarmata senza che nessuno l'abbia scritta.
+    for nome, valore in (("chiave", api_key), ("segreto", api_secret)):
+        if not _CHIAVE_VALIDA.fullmatch(valore):
+            raise UiError(
+                f"{nome} non valida: sono ammessi solo lettere, cifre, trattino e "
+                "trattino basso, da 16 a 128 caratteri. Copiala di nuovo da Binance."
+            )
 
     lines: list[str] = []
     if env_path.is_file():
@@ -456,10 +486,72 @@ def friendly_validation_message(error: Exception) -> str:
     return messaggio
 
 
+#: Metodi che cambiano lo stato. Le letture non vanno protette: senza
+#: intestazioni CORS un altro sito non puo' leggerne la risposta.
+STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+#: Nomi con cui il pannello accetta di essere chiamato.
+ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+
+@web.middleware
+async def same_origin_only(
+    request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
+) -> web.StreamResponse:
+    """Rifiuta le richieste che cambiano stato partite da un altro sito.
+
+    Il pannello non ha password, e va bene: ascolta solo su 127.0.0.1, quindi
+    serve gia' accesso al computer. Ma il browser e' un ponte verso
+    127.0.0.1: una pagina qualunque, aperta mentre il pannello gira, puo'
+    inviare una POST a http://127.0.0.1:8777/api/avvia con un modulo HTML,
+    senza bisogno di leggerne la risposta. Basterebbe a far partire il bot o
+    a chiudere tutte le posizioni a mercato.
+
+    Due controlli, entrambi su intestazioni che il browser imposta da solo e
+    che una pagina non puo' falsificare:
+
+    * ``Sec-Fetch-Site``, inviata dai browser moderni, dice se la richiesta
+      nasce dalla stessa origine;
+    * ``Origin``, presente su ogni POST cross-origin, deve coincidere con
+      l'indirizzo su cui gira il pannello.
+    """
+    if request.method not in STATE_CHANGING_METHODS:
+        return await handler(request)
+
+    rifiuto = (
+        "richiesta bloccata: arriva da un altro sito. Il pannello accetta "
+        "comandi solo dalla propria pagina, aperta su questo computer."
+    )
+
+    # Il nome con cui siamo stati chiamati deve essere il nostro. Senza
+    # questo controllo, un dominio dell'attaccante che risolve a 127.0.0.1
+    # (DNS rebinding) diventa "stessa origine" per il browser, e Origin e
+    # Sec-Fetch-Site tornano a dire quello che lui vuole.
+    host = request.host.split(":")[0].lower()
+    if host not in ALLOWED_HOSTS:
+        logger.warning("richiesta rifiutata: Host inatteso %s", request.host)
+        return _error(
+            "richiesta bloccata: il pannello risponde solo a 127.0.0.1 e localhost.",
+            403,
+        )
+
+    fetch_site = request.headers.get("Sec-Fetch-Site")
+    if fetch_site is not None and fetch_site not in ("same-origin", "none"):
+        logger.warning("richiesta cross-site rifiutata: Sec-Fetch-Site=%s", fetch_site)
+        return _error(rifiuto, 403)
+
+    origin = request.headers.get("Origin")
+    if origin is not None and urlparse(origin).netloc != request.host:
+        logger.warning("richiesta rifiutata: Origin %s diverso da %s", origin, request.host)
+        return _error(rifiuto, 403)
+
+    return await handler(request)
+
+
 def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Application:
     """Costruisce l'applicazione web del pannello."""
     supervisor = BotSupervisor(config_path=config_path, config=load_config(config_path))
-    app = web.Application()
+    app = web.Application(middlewares=[same_origin_only])
     app["supervisor"] = supervisor
 
     async def index(request: web.Request) -> web.StreamResponse:
@@ -507,6 +599,13 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
             changes = await _read_json(request)
             raw = await read_raw_config()
             updated = apply_config_changes(raw, changes)
+            # Cintura e bretelle: l'elenco dei campi modificabili gia' esclude
+            # la modalita', ma qui si verifica il risultato invece
+            # dell'intenzione. model_validate non passa dalla guardia sul
+            # denaro reale, quindi se un giorno l'elenco crescesse questa
+            # riga resterebbe l'ultima difesa.
+            if updated.get("mode") != raw.get("mode"):
+                raise UiError("la modalita' non si cambia dal pannello")
             # Validazione prima della scrittura: un file non valido
             # impedirebbe anche di riaprire il pannello.
             AppConfig.model_validate(updated)
@@ -676,6 +775,7 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
                 )
             result = BacktestEngine(config, build_generator(config)).run(candles)
             metrics = result.metrics
+            giudizio = assess(metrics)
             # I motivi si raggruppano per tipo, non per valore: "edge netto
             # -15.6 bps" e "edge netto -15.4 bps" sono lo stesso problema, e
             # tenerli separati produrrebbe un elenco illeggibile di varianti.
@@ -706,6 +806,10 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
                 "expectancy": str(metrics.expectancy),
                 "commissioni": str(metrics.total_fees),
                 "regge_i_costi": metrics.is_viable,
+                "verdetto": {
+                    "esito": giudizio.outcome,
+                    "spiegazione": giudizio.explanation,
+                },
                 "motivi_rifiuto": [
                     {"esempio": entry["esempio"], "volte": entry["conteggio"]}
                     for _, entry in sorted(
@@ -727,10 +831,12 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
             try:
                 job.result = await asyncio.to_thread(work)
                 job.state = "completato"
-                job.message = (
-                    "la strategia regge i costi"
-                    if job.result.get("regge_i_costi")
-                    else "la strategia NON regge i costi di transazione"
+                # Tre esiti, non due: "pochi dati" non e' una bocciatura, e
+                # annunciarlo come tale farebbe scartare una strategia che
+                # non e' mai stata misurata davvero.
+                verdetto = dict(job.result.get("verdetto", {}))
+                job.message = str(
+                    verdetto.get("spiegazione", "prova conclusa")
                 )
             except Exception as exc:
                 job.state = "fallito"

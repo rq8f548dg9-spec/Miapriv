@@ -29,7 +29,10 @@ __all__ = ["BotState", "StateStore"]
 
 logger = logging.getLogger("trading_bot.state")
 
-STATE_VERSION = 1
+#: Versione 2: aggiunge le monete gia' presenti sul conto (baseline). Uno
+#: stato di versione 1 non la contiene, e senza di essa non si puo' dire
+#: quali monete appartengano al bot: viene scartato e si riparte dai saldi.
+STATE_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +52,8 @@ class BotState:
     consecutive_losses: int
     killswitch_tripped: bool
     killswitch_reason: str | None
+    #: Monete presenti sul conto prima che il bot iniziasse: non sono sue.
+    baseline_holdings: dict[str, str] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -77,6 +82,9 @@ class BotState:
             consecutive_losses=int(payload["consecutive_losses"]),
             killswitch_tripped=bool(payload["killswitch_tripped"]),
             killswitch_reason=payload.get("killswitch_reason"),
+            baseline_holdings={
+                str(k): str(v) for k, v in dict(payload.get("baseline_holdings", {})).items()
+            },
             extra=dict(payload.get("extra", {})),
         )
 
@@ -96,7 +104,12 @@ class StateStore:
         self.path = Path(self.path)
 
     def capture(
-        self, portfolio: Portfolio, killswitch: KillSwitch, **extra: Any
+        self,
+        portfolio: Portfolio,
+        killswitch: KillSwitch,
+        *,
+        baseline_holdings: dict[str, Decimal] | None = None,
+        **extra: Any,
     ) -> BotState:
         last_event = killswitch.last_event
         return BotState(
@@ -117,6 +130,10 @@ class StateStore:
             consecutive_losses=portfolio.consecutive_losses,
             killswitch_tripped=killswitch.is_tripped,
             killswitch_reason=last_event.describe() if last_event else None,
+            baseline_holdings={
+                symbol: str(quantity)
+                for symbol, quantity in (baseline_holdings or {}).items()
+            },
             extra=dict(extra),
         )
 

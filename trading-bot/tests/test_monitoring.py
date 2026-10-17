@@ -287,3 +287,39 @@ class TestAlerts:
         manager = AlertManager(SimulatedClock(NOW))
         assert manager.reconciliation_failed("BTCUSDT: locale 0, exchange 0.5")
         assert manager.history[-1].severity is Severity.CRITICAL
+
+
+class TestBaseDelleMonete:
+    """La base va salvata: senza, al riavvio il bot scambierebbe la propria
+    posizione per monete di qualcun altro e la dimenticherebbe."""
+
+    def test_la_base_entra_nello_snapshot(self, tmp_path: Path) -> None:
+        config = load_config(Path("config/config.yaml"))
+        store = StateStore(tmp_path / "state.json", SimulatedClock(NOW), mode="test")
+        state = store.capture(
+            Portfolio(D("200")),
+            KillSwitch(config.risk.killswitch),
+            baseline_holdings={"BTCUSDT": D("1"), "ETHUSDT": D("0")},
+        )
+        assert state.baseline_holdings == {"BTCUSDT": "1", "ETHUSDT": "0"}
+
+    def test_la_base_sopravvive_al_salvataggio(self, tmp_path: Path) -> None:
+        config = load_config(Path("config/config.yaml"))
+        store = StateStore(tmp_path / "state.json", SimulatedClock(NOW), mode="test")
+        store.save(
+            store.capture(
+                Portfolio(D("200")),
+                KillSwitch(config.risk.killswitch),
+                baseline_holdings={"BTCUSDT": D("1.5")},
+            ),
+            force=True,
+        )
+        riletto = store.load()
+        assert riletto is not None
+        assert riletto.baseline_holdings == {"BTCUSDT": "1.5"}
+
+    def test_uno_stato_di_versione_precedente_viene_scartato(self, tmp_path: Path) -> None:
+        """Senza la base, lo stato vecchio non e' interpretabile in sicurezza."""
+        path = tmp_path / "state.json"
+        path.write_text(json.dumps({"version": 1, "saved_at_ms": NOW}), encoding="utf-8")
+        assert StateStore(path, SimulatedClock(NOW)).load() is None

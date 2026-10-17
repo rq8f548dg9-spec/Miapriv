@@ -360,6 +360,14 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
+
+/* Ogni testo che arriva dall'API passa di qui prima di entrare in innerHTML.
+   I simboli e i messaggi nascono dal flusso di mercato e dalle risposte
+   dell'exchange: sono dati, non marcatura, e vanno scritti come tali. */
+const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = (value) =>
+  String(value === null || value === undefined ? '' : value)
+    .replace(/[&<>"']/g, (c) => ESCAPES[c]);
 /* ───────────────── spiegazioni (bottoncini "i") ─────────────────
    Un testo per chiave; il bottone lo apre vicino a se'. Nessuna libreria:
    un fumetto solo, riposizionato ogni volta. */
@@ -630,7 +638,7 @@ function renderTiles(s) {
          'limite ' + (settingsCache.perdite_consecutive ?? '—'),
          s.perdite_consecutive > 0 ? 'neg' : ''),
     tile('Protezione', killLabel,
-         s.killswitch.scattato ? (s.killswitch.motivo || '').slice(0, 60) : 'kill switch',
+         s.killswitch.scattato ? esc((s.killswitch.motivo || '').slice(0, 60)) : 'kill switch',
          s.killswitch.scattato ? 'neg' : ''),
   ].join('');
 }
@@ -646,8 +654,8 @@ function renderPositions(s) {
       <th class="num">Prezzo ora</th><th class="num">Valore</th><th class="num">P&amp;L</th>
     </tr></thead><tbody>` + rows.map((p) => {
       const value = Number(p.pnl);
-      return `<tr><td>${p.simbolo}</td>
-        <td class="num">${p.quantita}</td>
+      return `<tr><td>${esc(p.simbolo)}</td>
+        <td class="num">${esc(p.quantita)}</td>
         <td class="num">${fmt(p.prezzo_carico)}</td>
         <td class="num">${fmt(p.prezzo_corrente)}</td>
         <td class="num">${fmt(p.valore)}</td>
@@ -807,15 +815,15 @@ function renderDecisions() {
       ? '<span class="badge good"><span class="dot"></span>ordine</span>'
       : '<span class="badge"><span class="dot"></span>niente</span>';
     const summary = d.approvata
-      ? `comprato ${d.quantita}`
-      : (d.motivi[0] || '').slice(0, 90);
+      ? `comprato ${esc(d.quantita)}`
+      : esc((d.motivi[0] || '').slice(0, 90));
     const features = Object.entries(d.feature || {})
-      .map(([k, v]) => `<span class="chip">${k}: ${Number(v).toFixed(4)}</span>`).join('');
+      .map(([k, v]) => `<span class="chip">${esc(k)}: ${Number(v).toFixed(4)}</span>`).join('');
     const reasons = (d.motivi || [])
-      .map((r) => `<li class="reason">${r}</li>`).join('');
+      .map((r) => `<li class="reason">${esc(r)}</li>`).join('');
     return `<details class="decision"><summary>
         <span class="muted">${clock(d.ts_ms)}</span>
-        <span>${d.simbolo}</span>
+        <span>${esc(d.simbolo)}</span>
         <span class="reason">${summary}</span>
         ${verdict}
       </summary><div class="body">
@@ -947,7 +955,9 @@ async function pollJob(target, onDone) {
       // verde: l'operazione e' andata a buon fine, il risultato no.
       let kind = 'err';
       if (lavoro.stato === 'completato') {
-        kind = lavoro.risultato && lavoro.risultato.regge_i_costi === false ? 'warn' : 'ok';
+        const esito = lavoro.risultato && lavoro.risultato.verdetto
+          && lavoro.risultato.verdetto.esito;
+        kind = esito === 'positivo' ? 'ok' : (esito === 'negativo' ? 'warn' : '');
       }
       note(target, lavoro.messaggio, kind);
       if (lavoro.stato === 'completato' && onDone) onDone(lavoro.risultato);
@@ -962,16 +972,28 @@ function renderBacktest(r) {
   box.classList.remove('hidden');
   const periodo = r.periodo
     ? `<p class="small muted" style="margin:0 0 8px">Periodo analizzato:
-       <strong>${r.periodo.da} – ${r.periodo.a}</strong> (${r.periodo.nota}).</p>`
+       <strong>${esc(r.periodo.da)} – ${esc(r.periodo.a)}</strong>
+       (${esc(r.periodo.nota)}).</p>`
     : '';
-  const verdict = r.regge_i_costi
-    ? `<div class="msg ok">&#10003; La strategia regge i costi su questi dati.
-        Puoi passare alla testnet.</div>`
-    : `<div class="msg warn">&#9888; La strategia <strong>non</strong> regge i costi
-        su questi dati. Farla girare adesso significherebbe perdere denaro lentamente,
-        anche in testnet: serve lavorarci sopra.</div>`;
+  const esito = (r.verdetto && r.verdetto.esito) || (r.regge_i_costi ? 'positivo' : 'negativo');
+  const VERDETTI = {
+    positivo: ['ok', '&#10003;',
+      'La strategia regge i costi su questi dati. Il passo successivo è ripetere ' +
+      'la prova su finestre diverse prima di fidarsi.'],
+    negativo: ['warn', '&#9888;',
+      'La strategia <strong>non</strong> regge i costi su questi dati. Farla girare ' +
+      'adesso significherebbe perdere denaro lentamente, anche in testnet.'],
+    insufficiente: ['', '&#8505;',
+      'Dati insufficienti per dire se funziona: <strong>non è una bocciatura</strong>, ' +
+      'è un campione troppo piccolo. Servono più operazioni, quindi più storico ' +
+      'oppure più giorni di raccolta dal vivo.'],
+  };
+  const [classe, icona, testo] = VERDETTI[esito] || VERDETTI.negativo;
+  // La spiegazione puntuale e' gia' nella riga di stato sopra: ripeterla qui
+  // raddoppierebbe il testo senza aggiungere nulla.
+  const verdict = `<div class="msg ${classe}">${icona} ${testo}</div>`;
   const reasons = (r.motivi_rifiuto || []).map((m) =>
-    `<tr><td>${m.esempio}</td><td class="num">${m.volte.toLocaleString('it-IT')}</td></tr>`
+    `<tr><td>${esc(m.esempio)}</td><td class="num">${m.volte.toLocaleString('it-IT')}</td></tr>`
   ).join('');
   box.innerHTML = periodo + verdict + `
     <div class="tiles" style="margin-top:12px">

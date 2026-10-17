@@ -21,7 +21,7 @@ from decimal import Decimal
 
 from core.portfolio import Portfolio
 from core.types import Fill, OrderStatus, Position, TimestampMs
-from execution.broker import Broker
+from execution.broker import AccountState, Broker
 from execution.idempotency import OrderRegistry
 from risk.killswitch import KillSwitch
 
@@ -92,6 +92,12 @@ class Reconciler:
     tolerance: float = 0.001
     #: Simboli di interesse: i saldi di altri asset non riguardano il bot.
     symbols: tuple[str, ...] = ()
+    #: Monete gia' presenti sul conto quando il bot e' arrivato: non sono sue.
+    #: La testnet accredita monete di prova e un conto reale puo' contenere
+    #: acquisti fatti a mano. Il bot gestisce solo la differenza fra il saldo
+    #: attuale e questo riferimento, altrimenti al primo segnale di uscita
+    #: venderebbe roba di qualcun altro. ``None`` = da stabilire al primo avvio.
+    baseline_holdings: dict[str, Decimal] | None = None
     #: Tetto al capitale che il bot si concede, qualunque sia il saldo reale.
     #: Serve soprattutto in testnet, dove il conto di prova viene accreditato
     #: con migliaia di unita': senza tetto, il bot dimensionerebbe le
@@ -102,6 +108,53 @@ class Reconciler:
 
     def base_asset(self, symbol: str) -> str:
         return symbol.removesuffix(self.quote_asset)
+
+    def _establish_baseline(self, state: AccountState) -> dict[str, Decimal]:
+        """Fissa le monete che non appartengono al bot. Solo al primo avvio.
+
+        Va chiamata quando il bot non ha ancora posizioni proprie, cioe' alla
+        ricostruzione dello stato. Rifarlo a bot avviato cancellerebbe la sua
+        posizione, scambiandola per una moneta di qualcun altro.
+        """
+        if self.baseline_holdings is None:
+            self.baseline_holdings = {
+                symbol: state.free(self.base_asset(symbol)) for symbol in self.symbols
+            }
+            presenti = {s: str(q) for s, q in self.baseline_holdings.items() if q > 0}
+            if presenti:
+                logger.info(
+                    "monete gia' sul conto, escluse dalla gestione del bot: %s", presenti
+                )
+        self._lower_baseline_if_needed(state)
+        return self.baseline_holdings
+
+    def _lower_baseline_if_needed(self, state: AccountState) -> None:
+        """Abbassa il riferimento se il saldo e' sceso sotto di esso.
+
+        Significa che qualcuno ha venduto fuori dal bot: sullo spot non puo'
+        esistere una posizione negativa, quindi il riferimento si adegua. Non
+        sale mai da solo, altrimenti un acquisto del bot verrebbe dimenticato.
+        """
+        if self.baseline_holdings is None:
+            return
+        for symbol in self.symbols:
+            available = state.free(self.base_asset(symbol))
+            previous = self.baseline_holdings.get(symbol, Decimal(0))
+            if available < previous:
+                logger.warning(
+                    "saldo di %s sceso sotto il riferimento (%s < %s): "
+                    "qualcuno ha venduto fuori dal bot, riferimento abbassato",
+                    self.base_asset(symbol),
+                    available,
+                    previous,
+                )
+                self.baseline_holdings[symbol] = available
+
+    def bot_quantity(self, symbol: str, state: AccountState) -> Decimal:
+        """Quantita' effettivamente gestita dal bot su un simbolo."""
+        baseline = (self.baseline_holdings or {}).get(symbol, Decimal(0))
+        owned: Decimal = state.free(self.base_asset(symbol)) - baseline
+        return owned if owned > 0 else Decimal(0)
 
     async def rebuild_portfolio(self, *, prices: dict[str, Decimal]) -> Portfolio:
         """Costruisce il portafoglio dai saldi reali. Usato all'avvio.
@@ -129,9 +182,11 @@ class Reconciler:
                 self.max_capital,
             )
 
+        self._establish_baseline(state)
+
         portfolio = Portfolio(cash)
         for symbol in self.symbols:
-            quantity = state.free(self.base_asset(symbol))
+            quantity = self.bot_quantity(symbol, state)
             if quantity <= 0:
                 continue
             price = prices.get(symbol)
@@ -204,10 +259,16 @@ class Reconciler:
         # Il confronto riguarda le posizioni, non il cash: il saldo in valuta
         # puo' superare di molto il capitale che il bot si concede, e non e'
         # una divergenza ma una scelta.
+        # Qui la base non si crea mai: a bot avviato equivarrebbe a dichiarare
+        # "non e' mia" la posizione appena aperta. Si aggiorna solo al ribasso.
+        self._lower_baseline_if_needed(state)
+
         differences: list[PositionDiff] = []
         for symbol in self.symbols:
             local = portfolio.positions.get(symbol, Position(symbol)).quantity
-            remote = state.free(self.base_asset(symbol))
+            # Al netto delle monete che erano gia' li': il confronto riguarda
+            # solo cio' che il bot ha comprato.
+            remote = self.bot_quantity(symbol, state)
             diff = PositionDiff(symbol, local, remote)
             if diff.relative_error > self.tolerance:
                 differences.append(diff)

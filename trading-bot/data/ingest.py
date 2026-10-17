@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -63,6 +64,19 @@ class MarketDataHandler(Protocol):
     def on_disconnect(self, ts_ms: TimestampMs, error: str) -> None: ...
 
 
+#: Forma ammessa per un simbolo. Arriva dalla rete e finisce nei percorsi
+#: dei file salvati e nei messaggi mostrati nel pannello: un simbolo che
+#: contiene "../" o un tag HTML non e' un simbolo, e' un tentativo.
+SYMBOL_PATTERN = re.compile(r"[A-Z0-9]{3,20}")
+
+
+def _checked_symbol(raw: object) -> str:
+    symbol = str(raw)
+    if not SYMBOL_PATTERN.fullmatch(symbol):
+        raise ValueError(f"simbolo non valido nel flusso: {symbol!r}")
+    return symbol
+
+
 def parse_stream_message(payload: str) -> Trade | Candle | DepthUpdate | None:
     """Decodifica un messaggio del combined stream Binance.
 
@@ -79,7 +93,7 @@ def parse_stream_message(payload: str) -> Trade | Candle | DepthUpdate | None:
 
     if event in ("trade", "aggTrade"):
         return Trade(
-            symbol=data["s"],
+            symbol=_checked_symbol(data["s"]),
             trade_id=int(data["t"] if "t" in data else data["a"]),
             price=Decimal(data["p"]),
             quantity=Decimal(data["q"]),
@@ -90,7 +104,7 @@ def parse_stream_message(payload: str) -> Trade | Candle | DepthUpdate | None:
     if event == "kline":
         kline = data["k"]
         return Candle(
-            symbol=data["s"],
+            symbol=_checked_symbol(data["s"]),
             open_time_ms=int(kline["t"]),
             close_time_ms=int(kline["T"]),
             open=Decimal(kline["o"]),
@@ -105,7 +119,7 @@ def parse_stream_message(payload: str) -> Trade | Candle | DepthUpdate | None:
 
     if event == "depthUpdate":
         return DepthUpdate(
-            symbol=data["s"],
+            symbol=_checked_symbol(data["s"]),
             first_update_id=int(data["U"]),
             final_update_id=int(data["u"]),
             bids=tuple((Decimal(p), Decimal(q)) for p, q in data["b"]),
@@ -143,12 +157,18 @@ class MarketDataIngestor:
     reconnects: int = 0
     messages_received: int = 0
     parse_errors: int = 0
+    #: Eventi su simboli che non abbiamo chiesto: contati, non consegnati.
+    ignored_symbols: int = 0
     last_message_ms: TimestampMs = 0
     _running: bool = field(default=False, repr=False)
 
     @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def _subscribed_symbols(self) -> frozenset[str]:
+        return frozenset(s.symbol for s in self.config.enabled_symbols)
 
     def stream_names(self) -> list[str]:
         """Flussi sottoscritti: trade, candele e profondita' per ogni simbolo."""
@@ -245,6 +265,15 @@ class MarketDataIngestor:
 
         if event is None:
             return
+
+        # Secondo filtro: la forma e' lecita, ma il simbolo deve anche essere
+        # uno di quelli che abbiamo sottoscritto. Un evento su un simbolo che
+        # non seguiamo non ha motivo di attraversare il sistema.
+        if event.symbol not in self._subscribed_symbols:
+            self.ignored_symbols += 1
+            logger.warning("evento su simbolo non sottoscritto, scartato: %s", event.symbol)
+            return
+
         if isinstance(event, Trade):
             self.handler.on_trade(event)
         elif isinstance(event, Candle):

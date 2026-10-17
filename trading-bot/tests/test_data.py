@@ -522,3 +522,62 @@ class TestParquetStore:
         store.flush()
         frame = store.read("trades")
         assert len(frame) == 5
+
+
+class TestSimboliOstili:
+    """Il simbolo arriva dal flusso di rete e finisce in due posti pericolosi:
+    nei percorsi dei file salvati e, attraverso i messaggi di rifiuto, nella
+    pagina del pannello. Va trattato come testo ostile, non come un nome."""
+
+    def test_un_simbolo_con_html_viene_rifiutato(self) -> None:
+        payload = json.dumps(
+            {"data": {"e": "trade", "s": "<img src=x onerror=alert(1)>", "t": 1,
+                      "p": "100", "q": "1", "T": NOW, "m": False}}
+        )
+        with pytest.raises(ValueError, match="simbolo"):
+            parse_stream_message(payload)
+
+    def test_un_simbolo_con_percorso_viene_rifiutato(self) -> None:
+        payload = json.dumps(
+            {"data": {"e": "trade", "s": "X/../../../../tmp/evil", "t": 1,
+                      "p": "100", "q": "1", "T": NOW, "m": False}}
+        )
+        with pytest.raises(ValueError, match="simbolo"):
+            parse_stream_message(payload)
+
+    def test_un_simbolo_normale_passa(self) -> None:
+        payload = json.dumps(
+            {"data": {"e": "trade", "s": "BTCUSDT", "t": 1, "p": "100",
+                      "q": "1", "T": NOW, "m": False}}
+        )
+        event = parse_stream_message(payload)
+        assert isinstance(event, Trade)
+
+    @pytest.mark.asyncio
+    async def test_un_simbolo_non_configurato_viene_scartato(self) -> None:
+        """Anche un simbolo dalla forma lecita, se non e' fra i nostri, non
+        deve entrare: non lo abbiamo chiesto noi."""
+        config = load_config(Path("config/config.yaml"))
+        handler = RecordingHandler()
+        messaggio = json.dumps(
+            {"data": {"e": "trade", "s": "DOGEUSDT", "t": 1, "p": "1",
+                      "q": "1", "T": NOW, "m": False}}
+        )
+
+        async def factory(url: str) -> FakeConnection:
+            return FakeConnection([messaggio])
+
+        ingestor = MarketDataIngestor(
+            config, SimulatedClock(NOW), handler, connection_factory=factory, max_cycles=1
+        )
+        await ingestor.run()
+        assert handler.trades == []
+        assert ingestor.ignored_symbols == 1
+
+    def test_lo_store_rifiuta_un_simbolo_con_percorso(self, tmp_path: Path) -> None:
+        """Seconda barriera: anche se un simbolo ostile arrivasse da altrove,
+        non deve poter scrivere fuori dalla cartella dei dati."""
+        store = ParquetStore(tmp_path / "dati")
+        veleno = Trade("X/../../../fuori", 1, D("100"), D("1"), NOW, False)
+        with pytest.raises(ValueError, match="simbolo"):
+            store.add_trade(veleno)

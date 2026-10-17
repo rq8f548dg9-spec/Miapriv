@@ -17,9 +17,9 @@ ridurre il rischio deve restare sempre possibile.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Protocol
 
 from config.schema import AppConfig
 from core.clock import Clock
@@ -47,8 +47,23 @@ from risk.sizing import PositionSizer, SizingResult, kelly_fraction
 
 __all__ = ["MarketContext", "RiskManager"]
 
-#: Firma della funzione che genera i client order id (cfr. execution/idempotency.py).
-ClientOrderIdFactory = Callable[[str, Side, TimestampMs], str]
+class ClientOrderIdFactory(Protocol):
+    """Genera l'identificativo di un ordine (cfr. ``execution/idempotency.py``).
+
+    Riceve tutto cio' che distingue una decisione da un'altra: due decisioni
+    diverse devono produrre id diversi, e la stessa decisione ricalcolata
+    dopo un riavvio deve produrre lo stesso id.
+    """
+
+    def __call__(
+        self,
+        *,
+        symbol: str,
+        side: Side,
+        quantity: Decimal,
+        intent: str,
+        ts_ms: TimestampMs,
+    ) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,7 +184,13 @@ class RiskManager:
             )
 
         order = Order(
-            client_order_id=self.client_order_id_factory(signal.symbol, side, now_ms),
+            client_order_id=self.client_order_id_factory(
+                symbol=signal.symbol,
+                side=side,
+                quantity=sizing.quantity,
+                intent=intent.value,
+                ts_ms=now_ms,
+            ),
             symbol=signal.symbol,
             side=side,
             order_type=OrderType.MARKET,
@@ -229,7 +250,13 @@ class RiskManager:
             side = Side.SELL if position.quantity > 0 else Side.BUY
             orders.append(
                 Order(
-                    client_order_id=self.client_order_id_factory(symbol, side, now_ms),
+                    client_order_id=self.client_order_id_factory(
+                        symbol=symbol,
+                        side=side,
+                        quantity=sizing.quantity,
+                        intent=OrderIntent.CLOSE.value,
+                        ts_ms=now_ms,
+                    ),
                     symbol=symbol,
                     side=side,
                     order_type=OrderType.MARKET,
