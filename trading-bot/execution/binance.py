@@ -41,7 +41,15 @@ from core.types import (
 )
 from execution.broker import AccountState, Broker, BrokerError, DepthSnapshot, OrderAck
 
-__all__ = ["BinanceBroker", "HttpClient", "HttpResponse", "RateLimiter", "parse_symbol_filters"]
+__all__ = [
+    "AmbiguousRequestError",
+    "BinanceBroker",
+    "HttpClient",
+    "HttpResponse",
+    "RateLimiter",
+    "TransportTimeoutError",
+    "parse_symbol_filters",
+]
 
 logger = logging.getLogger("trading_bot.binance")
 
@@ -54,6 +62,17 @@ class AmbiguousRequestError(BrokerError):
     dice esplicitamente che un 5xx puo' corrispondere a un'esecuzione
     riuscita. Prima si chiede all'exchange, poi semmai si rimanda.
     """
+
+
+class TransportTimeoutError(BrokerError):
+    """La risposta non e' arrivata in tempo.
+
+    Il trasporto non sa se la richiesta abbia cambiato qualcosa: lo sa chi
+    l'ha fatta. Per questo il timeout arriva come eccezione propria e
+    diventa ambiguo solo dove l'ambiguita' conta davvero, cioe' sugli
+    invii; su una lettura si ritenta e basta.
+    """
+
 
 #: Stati Binance -> stati interni.
 _STATUS_MAP = {
@@ -285,12 +304,34 @@ class BinanceBroker(Broker):
             url = indirizzo()
             await self.limiter.acquire(weight)
             self.requests_sent += 1
-            response = await self.http.request(
-                method,
-                url,
-                headers=headers,
-                timeout=self.config.exchange.request_timeout_s,
-            )
+            try:
+                response = await self.http.request(
+                    method,
+                    url,
+                    headers=headers,
+                    timeout=self.config.exchange.request_timeout_s,
+                )
+            except TransportTimeoutError as exc:
+                # Un timeout si comporta come un 5xx: la richiesta puo'
+                # essere arrivata lo stesso. Su un invio questo e' un esito
+                # sconosciuto e va chiesto all'exchange, non rimandato.
+                if not retryable:
+                    raise AmbiguousRequestError(
+                        f"{method} {path} con esito sconosciuto - {exc}"
+                    ) from exc
+                last_error = str(exc)
+                if attempt >= self.config.exchange.max_retries:
+                    break
+                self.retries += 1
+                logger.warning(
+                    "%s %s in timeout, nuovo tentativo fra %.1fs", method, path, delay
+                )
+                await self.clock.sleep(delay)
+                delay = min(
+                    delay * self.config.exchange.backoff_multiplier,
+                    self.config.exchange.backoff_max_s,
+                )
+                continue
             if 200 <= response.status < 300:
                 return response.payload
 
@@ -598,11 +639,13 @@ class AiohttpClient:
                 payload = await response.json(content_type=None)
                 return HttpResponse(status=response.status, payload=payload)
         except TimeoutError as exc:
-            # Un timeout si comporta come un 5xx: la richiesta puo' essere
-            # arrivata comunque, quindi il reinvio deve restare idempotente.
-            # Nel messaggio va solo il percorso: la query contiene la firma
-            # HMAC e i parametri, e questo testo finisce nel pannello.
-            raise BrokerError(f"timeout su {method} {url.split('?', 1)[0]}") from exc
+            # Eccezione dedicata: chi ha fatto la richiesta sa se era un
+            # invio (esito sconosciuto, si chiede) o una lettura (si
+            # ritenta). Nel messaggio va solo il percorso: la query contiene
+            # la firma HMAC, e questo testo finisce nel pannello.
+            raise TransportTimeoutError(
+                f"timeout su {method} {url.split('?', 1)[0]}"
+            ) from exc
 
     async def close(self) -> None:
         if self._session is not None:

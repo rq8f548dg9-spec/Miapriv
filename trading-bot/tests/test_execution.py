@@ -17,7 +17,13 @@ from config.credentials import Credentials
 from config.schema import AppConfig, Mode, load_config
 from core.clock import SimulatedClock
 from core.types import Order, OrderStatus, OrderType, Side
-from execution.binance import BinanceBroker, HttpResponse, RateLimiter, parse_symbol_filters
+from execution.binance import (
+    BinanceBroker,
+    HttpResponse,
+    RateLimiter,
+    TransportTimeoutError,
+    parse_symbol_filters,
+)
 from execution.broker import BrokerError
 
 D = Decimal
@@ -28,8 +34,8 @@ SECRET = "segreto-di-prova"
 class FakeHttp:
     """Trasporto finto: restituisce risposte predefinite e registra le richieste."""
 
-    def __init__(self, responses: list[HttpResponse]) -> None:
-        self.responses = responses
+    def __init__(self, responses: list[HttpResponse | BaseException]) -> None:
+        self.responses: list[HttpResponse | BaseException] = list(responses)
         self.requests: list[tuple[str, str, Mapping[str, str]]] = []
         self.closed = False
 
@@ -42,9 +48,10 @@ class FakeHttp:
         timeout: float | None = None,
     ) -> HttpResponse:
         self.requests.append((method, url, dict(headers or {})))
-        if len(self.responses) == 1:
-            return self.responses[0]
-        return self.responses.pop(0)
+        prossima = self.responses[0] if len(self.responses) == 1 else self.responses.pop(0)
+        if isinstance(prossima, BaseException):
+            raise prossima
+        return prossima
 
     async def close(self) -> None:
         self.closed = True
@@ -520,3 +527,122 @@ class TestInvioAmbiguo:
         with pytest.raises(BrokerError, match="rifiutata"):
             await broker.submit(self._order())
         assert len(http.requests) == 1
+
+
+class TestTimeoutDelTrasporto:
+    """Il timeout e' il caso che da' il nome all'esito sconosciuto, ed era
+    l'unico gestito al contrario: il trasporto sollevava un errore normale,
+    il runner marcava l'ordine come rifiutato e lo toglieva dagli ordini da
+    risolvere. Se l'ordine era partito davvero, quella posizione non la
+    gestiva piu' nessuno."""
+
+    def _order(self) -> Order:
+        return Order(
+            client_order_id="tb-timeout",
+            symbol="BTCUSDT",
+            side=Side.BUY,
+            order_type=OrderType.MARKET,
+            quantity=D("0.001"),
+            created_at_ms=NOW,
+        )
+
+    ESEGUITO: ClassVar[dict[str, object]] = {
+        "symbol": "BTCUSDT", "clientOrderId": "tb-timeout", "orderId": 9, "side": "BUY",
+        "status": "FILLED", "executedQty": "0.00100000",
+        "cummulativeQuoteQty": "60.00000000", "transactTime": NOW, "fills": [],
+    }
+
+    @pytest.mark.asyncio
+    async def test_un_ordine_andato_in_timeout_si_ritrova_non_si_rimanda(
+        self, config: AppConfig, credentials: Credentials
+    ) -> None:
+        http = FakeHttp([
+            TransportTimeoutError("timeout su POST /api/v3/order"),
+            HttpResponse(200, self.ESEGUITO),  # la GET di verifica lo ritrova
+        ])
+        clock = SimulatedClock(NOW)
+        broker = BinanceBroker(
+            config=config, credentials=credentials, clock=clock, http=http
+        )
+        ack = await broker.submit(self._order())
+        assert ack.status is OrderStatus.FILLED
+        assert [m for m, _, _ in http.requests].count("POST") == 1, (
+            "un esito sconosciuto non si rimanda: si chiede"
+        )
+
+    @pytest.mark.asyncio
+    async def test_un_timeout_su_un_ordine_mai_arrivato_resta_dichiarato(
+        self, config: AppConfig, credentials: Credentials
+    ) -> None:
+        """Se l'exchange non lo conosce, il reinvio automatico non parte
+        lo stesso: lo stato va verificato, non indovinato."""
+        http = FakeHttp([
+            TransportTimeoutError("timeout su POST /api/v3/order"),
+            HttpResponse(400, {"code": -2013, "msg": "Order does not exist."}),
+        ])
+        clock = SimulatedClock(NOW)
+        broker = BinanceBroker(
+            config=config, credentials=credentials, clock=clock, http=http
+        )
+        with pytest.raises(BrokerError, match="esito sconosciuto"):
+            await broker.submit(self._order())
+        assert [m for m, _, _ in http.requests].count("POST") == 1
+
+    @pytest.mark.asyncio
+    async def test_un_timeout_in_lettura_viene_ritentato(
+        self, config: AppConfig, credentials: Credentials
+    ) -> None:
+        """Su una lettura il timeout non e' ambiguo: non cambia nulla sul
+        conto, quindi si riprova."""
+        import asyncio
+
+        http = FakeHttp(
+            [TransportTimeoutError("timeout"), HttpResponse(200, EXCHANGE_INFO)]
+        )
+        clock = SimulatedClock(NOW)
+        broker = BinanceBroker(
+            config=config, credentials=credentials, clock=clock, http=http
+        )
+        task = asyncio.create_task(broker.exchange_filters())
+        for _ in range(60):
+            await asyncio.sleep(0)
+            if task.done():
+                break
+            wake = clock.next_wakeup_ms()
+            if wake is not None:
+                clock.advance_to(wake)
+        filtri = await asyncio.wait_for(task, timeout=2)
+        assert "BTCUSDT" in filtri
+        assert broker.retries == 1
+
+    @pytest.mark.asyncio
+    async def test_il_trasporto_vero_distingue_il_timeout(self) -> None:
+        """Senza questo, il resto della catena non puo' funzionare: il
+        timeout arriverebbe come un errore qualunque."""
+        from execution.binance import AiohttpClient
+
+        class SessioneCheVaInTimeout:
+            def request(self, *args: object, **kwargs: object) -> object:
+                raise TimeoutError("troppo lenta")
+
+        trasporto = AiohttpClient()
+        trasporto._session = SessioneCheVaInTimeout()
+        with pytest.raises(TransportTimeoutError):
+            await trasporto.request("POST", "https://esempio.invalid/api/v3/order?firma=x")
+
+    @pytest.mark.asyncio
+    async def test_il_messaggio_non_contiene_la_firma(self) -> None:
+        from execution.binance import AiohttpClient
+
+        class SessioneCheVaInTimeout:
+            def request(self, *args: object, **kwargs: object) -> object:
+                raise TimeoutError("troppo lenta")
+
+        trasporto = AiohttpClient()
+        trasporto._session = SessioneCheVaInTimeout()
+        try:
+            await trasporto.request("POST", "https://esempio.invalid/api/v3/order?signature=SEGRETO")
+        except TransportTimeoutError as exc:
+            assert "SEGRETO" not in str(exc)
+        else:  # pragma: no cover - il test sopra garantisce il sollevamento
+            raise AssertionError("doveva sollevare")
