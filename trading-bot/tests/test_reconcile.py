@@ -49,10 +49,12 @@ class StubBroker(Broker):
         self,
         *,
         balances: dict[str, Decimal] | None = None,
+        locked: dict[str, Decimal] | None = None,
         statuses: dict[str, OrderAck | None] | None = None,
         open_orders: tuple[Order, ...] = (),
     ) -> None:
         self.balances = balances or {"USDT": D("200")}
+        self.locked = locked or {}
         self.statuses = statuses or {}
         self.open_orders = open_orders
         self.status_queries: list[str] = []
@@ -62,7 +64,10 @@ class StubBroker(Broker):
 
     async def account_state(self) -> AccountState:
         return AccountState(
-            balances=dict(self.balances), open_orders=self.open_orders, fetched_at_ms=NOW
+            balances=dict(self.balances),
+            locked=dict(self.locked),
+            open_orders=self.open_orders,
+            fetched_at_ms=NOW,
         )
 
     async def submit(self, order: Order) -> OrderAck:
@@ -322,6 +327,83 @@ class TestReconcile:
         await rec.reconcile(Portfolio(D("200")), now_ms=NOW)
         await rec.reconcile(Portfolio(D("200")), now_ms=NOW + 1_000)
         assert len(rec.history) == 2
+
+
+class TestLiquiditaERealta:
+    """Il confronto riguardava solo le posizioni: un conto svuotato passava
+    per allineato, e il bot continuava a dimensionare ordini su soldi che non
+    c'erano piu'."""
+
+    @pytest.mark.asyncio
+    async def test_cassa_locale_maggiore_di_quella_vera_e_una_divergenza(self) -> None:
+        portfolio = Portfolio(D("200"))
+        broker = StubBroker(balances={"USDT": D("1")})
+        result = await reconciler(broker, OrderRegistry()).reconcile(portfolio, now_ms=NOW)
+        assert not result.is_consistent
+        assert "liquidit" in result.describe().lower()
+
+    @pytest.mark.asyncio
+    async def test_cassa_vera_maggiore_non_e_una_divergenza(self) -> None:
+        """Il tetto al capitale fa esattamente questo: il conto puo' avere
+        molto piu' di quanto il bot si concede."""
+        portfolio = Portfolio(D("200"))
+        broker = StubBroker(balances={"USDT": D("5000")})
+        rec = reconciler(broker, OrderRegistry())
+        rec.max_capital = D("200")
+        result = await rec.reconcile(portfolio, now_ms=NOW)
+        assert result.is_consistent
+
+    @pytest.mark.asyncio
+    async def test_un_acquisto_in_volo_non_e_una_divergenza(self) -> None:
+        """Un ordine di acquisto aperto blocca la valuta, che resta sul
+        conto: contarla come sparita farebbe scattare il kill switch per un
+        ordine del bot stesso."""
+        portfolio = Portfolio(D("200"))
+        broker = StubBroker(balances={"USDT": D("194")}, locked={"USDT": D("6")})
+        result = await reconciler(broker, OrderRegistry()).reconcile(portfolio, now_ms=NOW)
+        assert result.is_consistent, result.describe()
+
+    @pytest.mark.asyncio
+    async def test_le_monete_impegnate_in_un_ordine_restano_possedute(self) -> None:
+        """Un BTC bloccato da un ordine di vendita aperto e' ancora nostro:
+        contarlo come sparito sarebbe una divergenza inventata."""
+        portfolio = Portfolio(D("140"))
+        portfolio.apply_fill(
+            Fill("c", "BTCUSDT", Side.BUY, D("60000"), D("0.001"), D("0"), "USDT", NOW, False, "t")
+        )
+        broker = StubBroker(balances={"USDT": D("80")}, locked={"BTC": D("0.001")})
+        result = await reconciler(broker, OrderRegistry()).reconcile(portfolio, now_ms=NOW)
+        assert result.is_consistent, result.describe()
+
+    @pytest.mark.asyncio
+    async def test_la_liquidita_impegnata_non_e_spendibile(self) -> None:
+        """Il saldo di un conto con un ordine di acquisto aperto e' in parte
+        bloccato: sommarlo al disponibile fa dimensionare su soldi gia'
+        promessi a un altro ordine."""
+        broker = StubBroker(balances={"USDT": D("50")}, locked={"USDT": D("150")})
+        state = await broker.account_state()
+        assert state.free("USDT") == D("50")
+        assert state.total("USDT") == D("200")
+
+
+class TestCapitaleDichiarato:
+    """Il capitale dichiarato deve limitare quello che il bot mette a
+    rischio, non solo la cassa."""
+
+    @pytest.mark.asyncio
+    async def test_le_monete_gia_sul_conto_non_gonfiano_il_capitale(self) -> None:
+        """Un conto con 1.000 di cassa e BTC gia' comprati a mano non diventa
+        un portafoglio da 1.100 perche' il bot ci gira sopra."""
+        broker = StubBroker(balances={"USDT": D("1000"), "BTC": D("0.01")})
+        # Primo avvio su un conto gia' pieno: la base non e' ancora nota.
+        rec = Reconciler(
+            broker=broker, registry=OrderRegistry(), symbols=("BTCUSDT",),
+            max_capital=D("200"),
+        )
+        portfolio = await rec.rebuild_portfolio(prices={"BTCUSDT": D("60000")})
+        assert portfolio.cash == D("200")
+        assert "BTCUSDT" not in portfolio.positions
+        assert portfolio.equity == D("200")
 
 
 class TestFullRestartScenario:

@@ -81,12 +81,32 @@ class AccountState:
     locale dice cosa il bot credeva; questo dice cosa e' successo davvero.
     """
 
+    #: Saldi spendibili subito, per asset.
     balances: dict[str, Decimal]
     open_orders: tuple[Order, ...]
     fetched_at_ms: TimestampMs
+    #: Saldi bloccati da ordini aperti: posseduti ma non spendibili.
+    locked: dict[str, Decimal] = field(default_factory=dict)
 
     def free(self, asset: str) -> Decimal:
+        """Quanto si puo' spendere adesso.
+
+        Sommare il bloccato a questo numero fa dimensionare ordini su denaro
+        gia' promesso a un altro ordine: l'exchange rifiuta, o peggio esegue
+        entrambi se nel frattempo l'altro si libera.
+        """
         return self.balances.get(asset.upper(), Decimal(0))
+
+    def locked_amount(self, asset: str) -> Decimal:
+        return self.locked.get(asset.upper(), Decimal(0))
+
+    def total(self, asset: str) -> Decimal:
+        """Quanto se ne possiede, spendibile o no.
+
+        E' il numero giusto per confrontare le posizioni: una moneta bloccata
+        da un ordine di vendita aperto e' ancora nostra.
+        """
+        return self.free(asset) + self.locked_amount(asset)
 
 
 class Broker(ABC):

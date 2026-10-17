@@ -66,15 +66,29 @@ class Reconciliation:
     unknown_open_orders: tuple[str, ...]
     resolved_orders: tuple[str, ...]
     applied_fills: tuple[Fill, ...]
+    #: Liquidita' che il bot crede di avere e che sull'exchange non c'e'.
+    #: Zero quando il conto ne ha almeno quanta ne crede il bot.
+    cash_shortfall: Decimal = Decimal(0)
+    local_cash: Decimal = Decimal(0)
+    exchange_cash: Decimal = Decimal(0)
 
     @property
     def is_consistent(self) -> bool:
-        return not self.differences and not self.unknown_open_orders
+        return (
+            not self.differences
+            and not self.unknown_open_orders
+            and self.cash_shortfall <= 0
+        )
 
     def describe(self) -> str:
         if self.is_consistent:
             return "stato locale allineato con l'exchange"
         parts = [diff.describe() for diff in self.differences]
+        if self.cash_shortfall > 0:
+            parts.append(
+                f"liquidita': il bot conta su {self.local_cash}, sul conto ce ne "
+                f"sono {self.exchange_cash} (mancano {self.cash_shortfall})"
+            )
         if self.unknown_open_orders:
             parts.append(f"ordini aperti sconosciuti: {list(self.unknown_open_orders)}")
         return "; ".join(parts)
@@ -118,7 +132,7 @@ class Reconciler:
         """
         if self.baseline_holdings is None:
             self.baseline_holdings = {
-                symbol: state.free(self.base_asset(symbol)) for symbol in self.symbols
+                symbol: state.total(self.base_asset(symbol)) for symbol in self.symbols
             }
             presenti = {s: str(q) for s, q in self.baseline_holdings.items() if q > 0}
             if presenti:
@@ -138,7 +152,7 @@ class Reconciler:
         if self.baseline_holdings is None:
             return
         for symbol in self.symbols:
-            available = state.free(self.base_asset(symbol))
+            available = state.total(self.base_asset(symbol))
             previous = self.baseline_holdings.get(symbol, Decimal(0))
             if available < previous:
                 logger.warning(
@@ -153,7 +167,9 @@ class Reconciler:
     def bot_quantity(self, symbol: str, state: AccountState) -> Decimal:
         """Quantita' effettivamente gestita dal bot su un simbolo."""
         baseline = (self.baseline_holdings or {}).get(symbol, Decimal(0))
-        owned: Decimal = state.free(self.base_asset(symbol)) - baseline
+        # Posseduto, non spendibile: una moneta bloccata da un ordine di
+        # vendita aperto fa ancora parte della posizione.
+        owned: Decimal = state.total(self.base_asset(symbol)) - baseline
         return owned if owned > 0 else Decimal(0)
 
     async def rebuild_portfolio(self, *, prices: dict[str, Decimal]) -> Portfolio:
@@ -256,9 +272,11 @@ class Reconciler:
         resolved, fills = await self.resolve_pending_orders()
         state = await self.broker.account_state()
 
-        # Il confronto riguarda le posizioni, non il cash: il saldo in valuta
-        # puo' superare di molto il capitale che il bot si concede, e non e'
-        # una divergenza ma una scelta.
+        # Il confronto sul cash e' a senso unico: il saldo puo' superare di
+        # molto il capitale che il bot si concede (e' il tetto, non una
+        # divergenza), ma se il bot conta su una liquidita' che sul conto non
+        # c'e' dimensionera' ordini che l'exchange rifiutera', o peggio
+        # venderanno altro per pagarli.
         # Qui la base non si crea mai: a bot avviato equivarrebbe a dichiarare
         # "non e' mia" la posizione appena aperta. Si aggiorna solo al ribasso.
         self._lower_baseline_if_needed(state)
@@ -273,6 +291,16 @@ class Reconciler:
             if diff.relative_error > self.tolerance:
                 differences.append(diff)
 
+        # Posseduto, non spendibile: un ordine di acquisto aperto blocca la
+        # valuta, che resta comunque sul conto. Confrontare con il solo
+        # spendibile farebbe scattare il kill switch per un ordine del bot
+        # stesso ancora in volo.
+        disponibile = state.total(self.quote_asset)
+        mancante = portfolio.cash - disponibile
+        tolleranza_cash = abs(portfolio.cash) * Decimal(str(self.tolerance))
+        if mancante <= tolleranza_cash:
+            mancante = Decimal(0)
+
         known_ids = self.registry.known_ids
         unknown = tuple(
             order.client_order_id
@@ -286,6 +314,9 @@ class Reconciler:
             unknown_open_orders=unknown,
             resolved_orders=tuple(resolved),
             applied_fills=tuple(fills),
+            cash_shortfall=mancante,
+            local_cash=portfolio.cash,
+            exchange_cash=disponibile,
         )
         self.history.append(result)
 

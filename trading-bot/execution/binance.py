@@ -329,15 +329,26 @@ class BinanceBroker(Broker):
 
     async def account_state(self) -> AccountState:
         account = await self._request("GET", "/api/v3/account", signed=True, weight=10)
-        balances = {
-            item["asset"]: Decimal(item["free"]) + Decimal(item["locked"])
-            for item in account.get("balances", [])
-            if Decimal(item["free"]) + Decimal(item["locked"]) > 0
-        }
+        # Libero e bloccato restano separati: il bloccato e' posseduto (conta
+        # per le posizioni) ma non spendibile (non conta per il sizing).
+        # Sommarli in un unico "disponibile" fa costruire ordini su denaro
+        # gia' promesso a un altro ordine.
+        balances: dict[str, Decimal] = {}
+        locked: dict[str, Decimal] = {}
+        for item in account.get("balances", []):
+            libero = Decimal(item["free"])
+            bloccato = Decimal(item["locked"])
+            if libero > 0:
+                balances[item["asset"]] = libero
+            if bloccato > 0:
+                locked[item["asset"]] = bloccato
         raw_orders = await self._request("GET", "/api/v3/openOrders", signed=True, weight=40)
         open_orders = tuple(self._to_order(item) for item in raw_orders)
         return AccountState(
-            balances=balances, open_orders=open_orders, fetched_at_ms=self.clock.now_ms()
+            balances=balances,
+            locked=locked,
+            open_orders=open_orders,
+            fetched_at_ms=self.clock.now_ms(),
         )
 
     async def submit(self, order: Order) -> OrderAck:
