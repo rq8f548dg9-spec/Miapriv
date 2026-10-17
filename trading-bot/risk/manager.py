@@ -292,7 +292,9 @@ class RiskManager:
         """
         now_ms = self.clock.now_ms()
         sizing = self.sizer.size_to_close(
-            quantity_to_close=quantity, price=price, filters=filters
+            quantity_to_close=quantity,
+            price=price,
+            filters=filters.per_ordine(OrderType.MARKET),
         )
         if not sizing.is_tradeable:
             self.decisions.append(
@@ -386,19 +388,22 @@ class RiskManager:
         context: MarketContext,
         intent: OrderIntent,
     ) -> SizingResult:
+        # Il bot invia ordini a mercato: contano i limiti di MARKET_LOT_SIZE,
+        # che l'exchange tiene separati da quelli degli ordini limite.
+        filters = context.filters.per_ordine(OrderType.MARKET)
         if intent.adds_exposure:
             return self.sizer.size(
                 probability=signal.probability,
                 payoff_ratio=context.payoff_ratio,
                 price=context.price,
                 equity=snapshot.equity,
-                filters=context.filters,
+                filters=filters,
                 available_quote=context.available_quote,
             )
         return self.sizer.size_to_close(
             quantity_to_close=snapshot.position(signal.symbol).quantity,
             price=context.price,
-            filters=context.filters,
+            filters=filters,
         )
 
     def _reject(

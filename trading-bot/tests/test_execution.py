@@ -156,6 +156,48 @@ class TestExchangeInfo:
         ]
         assert parse_symbol_filters(payload, NOW).min_notional == D("10")
 
+    def test_gli_ordini_a_mercato_hanno_i_loro_limiti(self) -> None:
+        """MARKET_LOT_SIZE e' un filtro separato, con step e minimi propri
+        per gli ordini a mercato. Il bot invia solo ordini a mercato: usare
+        lo step di LOT_SIZE significa farsi rifiutare l'ordine."""
+        payload = dict(EXCHANGE_INFO["symbols"][0])
+        payload["filters"] = [
+            {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+            {"filterType": "LOT_SIZE", "stepSize": "0.00001", "minQty": "0.00001",
+             "maxQty": "9000"},
+            {"filterType": "MARKET_LOT_SIZE", "stepSize": "0.001", "minQty": "0.002",
+             "maxQty": "100"},
+            {"filterType": "NOTIONAL", "minNotional": "5", "maxNotional": "9000000"},
+        ]
+        filtri = parse_symbol_filters(payload, NOW)
+        assert filtri.step_size == D("0.00001")  # resta quello degli ordini limite
+
+        mercato = filtri.per_ordine(OrderType.MARKET)
+        assert mercato.step_size == D("0.001")
+        assert mercato.min_quantity == D("0.002")
+        assert mercato.max_quantity == D("100")
+        assert mercato.round_quantity(D("0.0027")) == D("0.002")
+
+    def test_senza_market_lot_size_valgono_i_limiti_normali(self) -> None:
+        payload = dict(EXCHANGE_INFO["symbols"][0])
+        filtri = parse_symbol_filters(payload, NOW)
+        assert filtri.per_ordine(OrderType.MARKET).step_size == filtri.step_size
+
+    def test_il_tetto_di_notional_viene_letto(self) -> None:
+        payload = dict(EXCHANGE_INFO["symbols"][0])
+        payload["filters"] = [
+            {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+            {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001",
+             "maxQty": "100"},
+            {"filterType": "NOTIONAL", "minNotional": "5", "maxNotional": "200"},
+        ]
+        filtri = parse_symbol_filters(payload, NOW)
+        assert filtri.max_notional == D("200")
+        assert any(
+            "maxNotional" in motivo or "massimo" in motivo
+            for motivo in filtri.quantity_violations(D("50"), D("10"))
+        ), filtri.quantity_violations(D("50"), D("10"))
+
     @pytest.mark.asyncio
     async def test_i_filtri_vengono_messi_in_cache(
         self, config: AppConfig, credentials: Credentials

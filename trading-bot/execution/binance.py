@@ -143,6 +143,18 @@ class RateLimiter:
         self._tokens = min(self.capacity, self._tokens + elapsed_s * self.refill_per_second)
 
 
+def _decimale_positivo(valore: Any) -> Decimal | None:
+    """Converte un campo di exchangeInfo, ignorando gli zeri.
+
+    Binance usa 0 per dire "regola disattivata": trattarlo come un limite
+    vero bloccherebbe ogni ordine.
+    """
+    if valore is None:
+        return None
+    numero = Decimal(str(valore))
+    return numero if numero > 0 else None
+
+
 def parse_symbol_filters(payload: Mapping[str, Any], fetched_at_ms: TimestampMs) -> SymbolFilters:
     """Estrae i filtri di un simbolo dalla risposta di ``exchangeInfo``.
 
@@ -162,6 +174,11 @@ def parse_symbol_filters(payload: Mapping[str, Any], fetched_at_ms: TimestampMs)
     min_notional = notional.get("minNotional") or notional.get("notional")
     if min_notional is None:
         raise BrokerError(f"minNotional assente per {payload.get('symbol')}")
+    max_notional = notional.get("maxNotional")
+    # MARKET_LOT_SIZE vale solo per gli ordini a mercato ed e' separato da
+    # LOT_SIZE: dove c'e', i suoi step e minimi sono quelli che l'exchange
+    # applica davvero agli ordini che il bot invia.
+    market_lot = filters.get("MARKET_LOT_SIZE", {})
 
     return SymbolFilters(
         symbol=payload["symbol"],
@@ -173,6 +190,10 @@ def parse_symbol_filters(payload: Mapping[str, Any], fetched_at_ms: TimestampMs)
         base_precision=int(payload.get("baseAssetPrecision", 8)),
         quote_precision=int(payload.get("quoteAssetPrecision", 8)),
         fetched_at_ms=fetched_at_ms,
+        market_step_size=_decimale_positivo(market_lot.get("stepSize")),
+        market_min_quantity=_decimale_positivo(market_lot.get("minQty")),
+        market_max_quantity=_decimale_positivo(market_lot.get("maxQty")),
+        max_notional=_decimale_positivo(max_notional),
     )
 
 

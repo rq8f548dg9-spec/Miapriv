@@ -78,6 +78,12 @@ def manager(config: AppConfig, clock: SimulatedClock) -> RiskManager:
     return RiskManager.from_config(config, clock, make_id)
 
 
+def _id_di_prova(
+    *, symbol: str, side: Side, quantity: Decimal, intent: str, ts_ms: int
+) -> str:
+    return f"test-{symbol}-{side.value}-{intent}-{quantity}-{ts_ms}"
+
+
 def snapshot_of(portfolio: Portfolio, ts_ms: int = NOW) -> PortfolioSnapshot:
     return portfolio.snapshot(ts_ms)
 
@@ -254,6 +260,29 @@ class TestSizing:
         )
         assert not result.is_tradeable
         assert any("stepSize" in motivo or "tetto" in motivo for motivo in result.reasons)
+
+    def test_il_sizing_usa_lo_step_degli_ordini_a_mercato(
+        self, config: AppConfig
+    ) -> None:
+        """Il bot invia ordini a mercato: se arrotonda sullo step degli
+        ordini limite, l'exchange glieli rifiuta."""
+        due_step = SymbolFilters(
+            symbol="BTCUSDT", tick_size=D("0.01"), step_size=D("0.00001"),
+            min_quantity=D("0.00001"), max_quantity=D("9000"), min_notional=D("5"),
+            base_precision=5, quote_precision=2, fetched_at_ms=NOW,
+            market_step_size=D("0.01"), market_min_quantity=D("0.01"),
+            market_max_quantity=D("100"),
+        )
+        manager = RiskManager.from_config(config, SimulatedClock(NOW), _id_di_prova)
+        decision = manager.evaluate(
+            long_signal(probability=0.95),
+            snapshot_of(Portfolio(D("200"))),
+            context(due_step, price=D("125"), payoff_ratio=5.0),
+        )
+        assert decision.approved, decision.rejection_reasons
+        assert decision.order is not None
+        quantita = decision.order.quantity
+        assert quantita % D("0.01") == 0, f"{quantita} non e' multipla dello step di mercato"
 
     def test_rispetta_il_tetto_per_ordine(self, config: AppConfig, filters: SymbolFilters) -> None:
         sizer = PositionSizer(config.risk.sizing)

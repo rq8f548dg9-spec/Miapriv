@@ -380,9 +380,10 @@ class BacktestEngine:
                 "ordini non trova esecuzione al prezzo richiesto"
             )
         fill = self._execute(order, candle, now_ms)
-        filters = self.filters.get(order.symbol) or default_filters(
-            order.symbol, fetched_at_ms=now_ms
-        )
+        filters = (
+            self.filters.get(order.symbol)
+            or default_filters(order.symbol, fetched_at_ms=now_ms)
+        ).per_ordine(order.order_type)
         problemi = list(filters.quantity_violations(order.quantity, fill.price))
         if order.side is Side.BUY:
             costo = order.quantity * fill.price + fill.fee

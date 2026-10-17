@@ -14,7 +14,7 @@ Regole di progetto applicate qui:
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from enum import StrEnum
@@ -552,12 +552,40 @@ class SymbolFilters:
     quote_precision: int
     #: Istante di lettura: un filtro vecchio va riletto, non riusato.
     fetched_at_ms: TimestampMs
+    #: Limiti propri degli ordini a mercato (MARKET_LOT_SIZE). Binance li
+    #: tiene separati da LOT_SIZE e possono differire: il bot invia ordini a
+    #: mercato, quindi usare lo step sbagliato significa farseli rifiutare.
+    #: ``None`` quando il simbolo non espone il filtro.
+    market_step_size: Decimal | None = None
+    market_min_quantity: Decimal | None = None
+    market_max_quantity: Decimal | None = None
+    #: Tetto di controvalore del filtro NOTIONAL, quando presente.
+    max_notional: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.tick_size <= 0 or self.step_size <= 0:
             raise ValueError(f"{self.symbol}: tick_size e step_size devono essere positivi")
         if self.min_quantity > self.max_quantity:
             raise ValueError(f"{self.symbol}: min_quantity > max_quantity")
+
+    def per_ordine(self, order_type: OrderType) -> SymbolFilters:
+        """Gli stessi filtri, con i limiti che valgono per questo tipo di ordine.
+
+        Per gli ordini a mercato subentrano i limiti di MARKET_LOT_SIZE dove
+        il simbolo li dichiara; per tutti gli altri restano quelli di
+        LOT_SIZE. Restituisce se stesso quando non cambia nulla, cosi' il
+        chiamante puo' usarlo senza preoccuparsi del caso comune.
+        """
+        if order_type is not OrderType.MARKET:
+            return self
+        if self.market_step_size is None and self.market_min_quantity is None:
+            return self
+        return replace(
+            self,
+            step_size=self.market_step_size or self.step_size,
+            min_quantity=self.market_min_quantity or self.min_quantity,
+            max_quantity=self.market_max_quantity or self.max_quantity,
+        )
 
     def round_quantity(self, quantity: Decimal) -> Decimal:
         """Tronca la quantita' allo step. Sempre verso il basso: non si compra
@@ -602,6 +630,10 @@ class SymbolFilters:
         if notional < self.min_notional:
             problems.append(
                 f"notional {notional} sotto MIN_NOTIONAL {self.min_notional}"
+            )
+        if self.max_notional is not None and notional > self.max_notional:
+            problems.append(
+                f"notional {notional} sopra il massimo {self.max_notional}"
             )
         return tuple(problems)
 
