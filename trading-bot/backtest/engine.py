@@ -22,6 +22,7 @@ misurerebbe un sistema che non esiste.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -46,6 +47,8 @@ from risk.manager import MarketContext, RiskManager
 from signals.base import SignalGenerator
 
 __all__ = ["BacktestEngine", "BacktestResult", "default_filters"]
+
+logger = logging.getLogger("trading_bot.backtest")
 
 
 def default_filters(symbol: str, *, fetched_at_ms: TimestampMs = 0) -> SymbolFilters:
@@ -82,6 +85,9 @@ class BacktestResult:
     bars_processed: int
     orders_submitted: int
     orders_rejected: int
+    #: Ordini approvati che l'exchange simulato non avrebbe potuto eseguire
+    #: al prezzo trovato alla barra dopo (fondi, posseduto, filtri).
+    orders_unfilled: int = 0
 
     @property
     def total_return(self) -> float:
@@ -92,7 +98,8 @@ class BacktestResult:
     def summary(self) -> str:
         return (
             f"barre={self.bars_processed} ordini={self.orders_submitted} "
-            f"rifiuti={self.orders_rejected} equity {self.initial_equity} -> "
+            f"rifiuti={self.orders_rejected} non eseguiti={self.orders_unfilled} "
+            f"equity {self.initial_equity} -> "
             f"{self.final_equity} | {self.metrics.summary()}"
         )
 
@@ -141,6 +148,7 @@ class BacktestEngine:
         portfolio = Portfolio(initial)
         features = FeatureEngine(self.config.features)
         pending: dict[str, Order] = {}
+        ultimi_prezzi: dict[str, Decimal] = {}
 
         def esposizione_in_volo() -> dict[str, Decimal]:
             """Ordini decisi e non ancora eseguiti: esposizione gia' impegnata.
@@ -165,6 +173,7 @@ class BacktestEngine:
         equity_curve: list[tuple[TimestampMs, Decimal]] = [(clock.now_ms(), portfolio.equity)]
         submitted = 0
         rejected = 0
+        non_eseguiti = 0
 
         # Coda di eventi: ogni candela produce un'apertura e una chiusura, e i
         # due momenti si intrecciano fra simboli diversi. Costruire la coda
@@ -184,11 +193,21 @@ class BacktestEngine:
                 # --- apertura barra: si eseguono gli ordini decisi alla barra precedente
                 order = pending.pop(candle.symbol, None)
                 if order is not None:
-                    fill = self._execute(order, candle, clock.now_ms())
-                    fills.append(fill)
-                    result = portfolio.apply_fill(fill)
-                    if result is not None:
-                        trades.append(result)
+                    fill, motivo = self.try_execute(
+                        order, candle, portfolio, clock.now_ms()
+                    )
+                    if fill is None:
+                        non_eseguiti += 1
+                        logger.info(
+                            "ordine %s non eseguibile all'apertura: %s",
+                            order.client_order_id,
+                            motivo,
+                        )
+                    else:
+                        fills.append(fill)
+                        result = portfolio.apply_fill(fill)
+                        if result is not None:
+                            trades.append(result)
                 continue
 
             # --- chiusura barra: solo ora la candela e' osservabile
@@ -201,6 +220,30 @@ class BacktestEngine:
                 risk.limits.correlations.update(candle.symbol, bar_return)
 
             equity_curve.append((clock.now_ms(), portfolio.equity))
+            ultimi_prezzi[candle.symbol] = candle.close
+
+            # --- lo stop vale anche qui: un backtest che resta investito
+            # dopo uno stop misura una protezione che dal vivo non esiste.
+            risk.killswitch.check(
+                portfolio.snapshot(clock.now_ms()), now_ms=clock.now_ms()
+            )
+            if risk.killswitch.flatten_pending:
+                chiusure = risk.flatten_all(
+                    portfolio.snapshot(clock.now_ms()),
+                    ultimi_prezzi,
+                    {
+                        symbol: self.filters.get(symbol)
+                        or default_filters(symbol, fetched_at_ms=clock.now_ms())
+                        for symbol in portfolio.positions
+                    },
+                )
+                for chiusura in chiusure:
+                    # Alla barra successiva, come ogni altro ordine: anche la
+                    # chiusura d'emergenza paga lo scarto fra decisione ed
+                    # esecuzione.
+                    pending.setdefault(chiusura.symbol, chiusura)
+                if not chiusure and not portfolio.snapshot(clock.now_ms()).open_positions:
+                    risk.killswitch.mark_flattened()
 
             # --- decisione per la barra successiva
             if candle.symbol in pending:
@@ -259,7 +302,43 @@ class BacktestEngine:
             bars_processed=len(ordered),
             orders_submitted=submitted,
             orders_rejected=rejected,
+            orders_unfilled=non_eseguiti,
         )
+
+    def try_execute(
+        self, order: Order, candle: Candle, portfolio: Portfolio, now_ms: TimestampMs
+    ) -> tuple[Fill | None, str]:
+        """Esegue l'ordine se l'exchange lo avrebbe accettato a questo prezzo.
+
+        Fra la decisione e l'esecuzione passa una barra, e il prezzo puo'
+        essere saltato: l'ordine deciso su 60.000 puo' trovarsi davanti un
+        mercato a 6.000.000. Eseguirlo comunque fa spendere soldi che non ci
+        sono e porta il conto simulato sotto zero, cosa che su un exchange a
+        pronti non succede. Qui si ricontrolla con il prezzo vero: fondi,
+        posseduto e filtri di coppia.
+        """
+        fill = self._execute(order, candle, now_ms)
+        filters = self.filters.get(order.symbol) or default_filters(
+            order.symbol, fetched_at_ms=now_ms
+        )
+        problemi = list(filters.quantity_violations(order.quantity, fill.price))
+        if order.side is Side.BUY:
+            costo = order.quantity * fill.price + fill.fee
+            if costo > portfolio.cash:
+                problemi.append(
+                    f"liquidita' insufficiente: servono {costo:.2f}, "
+                    f"in cassa {portfolio.cash:.2f}"
+                )
+        else:
+            posseduto = portfolio.positions.get(order.symbol)
+            disponibile = Decimal(0) if posseduto is None else posseduto.quantity
+            if order.quantity > disponibile:
+                problemi.append(
+                    f"vendita di {order.quantity} oltre il posseduto {disponibile}"
+                )
+        if problemi:
+            return None, "; ".join(problemi)
+        return fill, ""
 
     def _execute(self, order: Order, candle: Candle, now_ms: TimestampMs) -> Fill:
         """Esegue un ordine all'apertura della barra, con costi applicati.
