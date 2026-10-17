@@ -1,0 +1,18 @@
+Metadata-Version: 2.4
+Name: trading-bot
+Version: 0.1.0
+Summary: Bot di trading algoritmico modulare, testnet-first
+Requires-Python: >=3.11
+Requires-Dist: pydantic>=2.6
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: websockets>=12.0
+Requires-Dist: aiohttp>=3.9
+Requires-Dist: polars>=0.20
+Requires-Dist: duckdb>=0.10
+Requires-Dist: pyarrow>=15.0
+Requires-Dist: structlog>=24.1
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
+Requires-Dist: mypy>=1.9; extra == "dev"
+Requires-Dist: ruff>=0.3; extra == "dev"

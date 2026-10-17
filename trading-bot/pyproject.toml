@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "trading-bot"
 version = "0.1.0"
@@ -21,6 +25,29 @@ dev = [
     "mypy>=1.9",
     "ruff>=0.3",
 ]
+
+# I pacchetti sono elencati a mano: con una decina di cartelle al primo
+# livello setuptools si rifiuta di indovinare quali siano, e l'installazione
+# fallisce. Senza questo elenco l'avviatore si romperebbe al primo lancio.
+[tool.setuptools]
+packages = [
+    "backtest",
+    "config",
+    "core",
+    "data",
+    "execution",
+    "features",
+    "monitoring",
+    "risk",
+    "scripts",
+    "signals",
+    "webui",
+]
+py-modules = ["main", "runner"]
+
+[tool.setuptools.package-data]
+webui = ["static/*.html"]
+config = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

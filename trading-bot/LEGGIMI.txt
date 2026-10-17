@@ -1,0 +1,40 @@
+BOT TRADING — come si avvia (Windows)
+=====================================
+
+1. Fai doppio clic su:  avvia.bat
+
+   Si apre una finestra nera: e' normale, e' il bot che parte.
+   La prima volta impiega un minuto a prepararsi, le volte dopo e' immediato.
+
+2. Si apre da solo il browser sul pannello di controllo.
+   Se non si apre, vai a mano su:  http://127.0.0.1:8777
+
+3. Nel pannello segui i tre passi della sezione "Preparazione":
+
+   Passo 1 — Collega la testnet di Binance
+             Vai su https://testnet.binance.vision
+             Accedi con GitHub, genera le chiavi API e incollale nel pannello.
+             Sono chiavi di PROVA, con denaro finto. Nessun rischio.
+
+   Passo 2 — Scarica lo storico dei prezzi (bastano 30 giorni).
+
+   Passo 3 — Prova la strategia: ti dice se regge le commissioni.
+
+4. Poi il pulsante "Avvia il bot" diventa cliccabile.
+
+Per chiudere tutto: chiudi la finestra nera.
+
+
+SERVE PYTHON
+------------
+Se al doppio clic appare "Python non risulta installato":
+scaricalo da https://www.python.org/downloads/ e durante l'installazione
+metti la spunta su "Add python.exe to PATH". Poi riprova col doppio clic.
+
+
+DENARO VERO
+-----------
+Il pannello NON puo' passare a denaro reale: funziona solo sulla testnet,
+cioe' su denaro finto. Il passaggio a denaro vero richiede due modifiche
+fatte a mano, apposta perche' non succeda per sbaglio. E' spiegato nel
+file README.md.
