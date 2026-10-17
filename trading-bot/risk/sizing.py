@@ -54,6 +54,11 @@ class PositionSizer:
     rischiare), poi i tetti di configurazione (quanto ci permettiamo), infine
     i filtri dell'exchange (quanto e' tecnicamente inviabile). Un ordine che
     non supera l'ultimo passo viene rifiutato qui, prima della rete.
+
+    ``target_order_quote`` e' la misura nominale dell'ordine, non un
+    suggerimento: il risultato non la supera mai. Kelly la riduce quando
+    l'edge e' debole, e se la riduce sotto ``min_order_quote`` l'ordine non
+    si fa, perche' le fee se lo mangerebbero.
     """
 
     def __init__(self, config: SizingConfig) -> None:
@@ -94,7 +99,14 @@ class PositionSizer:
             )
 
         applied = min(full * config.kelly_fraction, config.kelly_fraction)
-        notional = equity * Decimal(str(applied))
+        kelly_notional = equity * Decimal(str(applied))
+
+        # La misura dichiarata e' quella: chi scrive "ordine da 5" si aspetta
+        # ordini da 5. Kelly puo' solo ridurla, mai gonfiarla. Senza questo
+        # vincolo il valore in configurazione serviva solo alla stima dei
+        # costi, e un saldo di prova da migliaia di unita' faceva inviare
+        # ordini che il conto vero non potrebbe mai permettersi.
+        notional = min(kelly_notional, config.target_order_quote)
 
         # Tetti: percentuale di equity, massimo assoluto, liquidita' disponibile.
         notional = min(notional, equity * Decimal(str(config.max_order_pct_of_equity)))
@@ -128,6 +140,24 @@ class PositionSizer:
                 kelly_full=full,
                 kelly_applied=applied,
             )
+
+        # Troncare allo step puo' far scendere l'ordine sotto il minimo
+        # dell'exchange: inviarlo cosi' vuol dire farselo rifiutare, e su un
+        # conto piccolo e' il caso normale, non l'eccezione. Si prova un passo
+        # in piu', che resta comunque sotto il tetto per ordine.
+        if quantity * price < required:
+            maggiorata = quantity + filters.step_size
+            if maggiorata * price <= config.max_order_quote:
+                quantity = maggiorata
+            else:
+                return self._reject(
+                    f"quantita' {quantity} vale {quantity * price:.4f}, sotto il "
+                    f"minimo con margine ({required:.4f}); il passo successivo "
+                    f"({filters.step_size}) sfonderebbe il tetto per ordine "
+                    f"{config.max_order_quote}",
+                    kelly_full=full,
+                    kelly_applied=applied,
+                )
 
         final_notional = quantity * price
         violations = filters.quantity_violations(quantity, price)

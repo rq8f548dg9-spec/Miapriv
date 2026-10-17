@@ -161,6 +161,99 @@ class TestSizing:
         assert result.kelly_applied <= config.risk.sizing.kelly_fraction
         assert result.notional <= D("200") * D("0.10")
 
+    def test_il_valore_dichiarato_e_la_misura_dell_ordine(
+        self, config: AppConfig, filters: SymbolFilters
+    ) -> None:
+        """Chi scrive "valore di un ordine: 5" si aspetta ordini da 5.
+
+        Prima il campo serviva solo alla stima dei costi: con 200 di capitale
+        il bot inviava ordini da 20, quattro volte quanto dichiarato, e
+        cambiare il valore nel pannello non cambiava nulla.
+        """
+        sizer = PositionSizer(config.risk.sizing)
+        result = sizer.size(
+            probability=0.95, payoff_ratio=5.0, price=BTC_PRICE,
+            equity=D("200"), filters=filters,
+        )
+        assert result.is_tradeable
+        # l'arrotondamento allo step puo' solo togliere qualcosa
+        assert D("5.5") <= result.notional <= config.risk.sizing.target_order_quote
+
+    def test_raddoppiare_il_valore_dichiarato_raddoppia_l_ordine(
+        self, config: AppConfig, filters: SymbolFilters
+    ) -> None:
+        doppio = config.risk.sizing.model_copy(update={"target_order_quote": D("12")})
+        result = PositionSizer(doppio).size(
+            probability=0.95, payoff_ratio=5.0, price=BTC_PRICE,
+            equity=D("200"), filters=filters,
+        )
+        assert D("11.5") <= result.notional <= D("12")
+
+    def test_kelly_puo_solo_ridurre_l_ordine_mai_aumentarlo(
+        self, config: AppConfig, filters: SymbolFilters
+    ) -> None:
+        """Un edge debole vale meno del valore nominale: si scende, e se si
+        scende sotto il minimo operativo non si opera."""
+        sizer = PositionSizer(config.risk.sizing)
+        debole = sizer.size(
+            probability=0.52, payoff_ratio=1.1, price=BTC_PRICE,
+            equity=D("200"), filters=filters,
+        )
+        assert debole.notional < config.risk.sizing.target_order_quote
+        forte = sizer.size(
+            probability=0.95, payoff_ratio=5.0, price=BTC_PRICE,
+            equity=D("200"), filters=filters,
+        )
+        assert forte.notional <= config.risk.sizing.target_order_quote
+
+    def test_un_capitale_grande_non_gonfia_l_ordine(
+        self, config: AppConfig, filters: SymbolFilters
+    ) -> None:
+        """Sulla testnet il saldo finto e' di migliaia: senza questo vincolo
+        la prova userebbe ordini che il conto vero non potra' mai fare."""
+        result = PositionSizer(config.risk.sizing).size(
+            probability=0.95, payoff_ratio=5.0, price=BTC_PRICE,
+            equity=D("1000000"), filters=filters,
+        )
+        assert result.notional <= config.risk.sizing.target_order_quote
+
+    def test_un_passo_in_piu_se_larrotondamento_scende_sotto_il_minimo(
+        self, config: AppConfig
+    ) -> None:
+        """Troncare allo step puo' far scendere l'ordine sotto il minimo
+        dell'exchange: inviarlo cosi' significa farselo rifiutare. Meglio un
+        passo in piu', finche' resta sotto il tetto per ordine."""
+        grosso_passo = SymbolFilters(
+            symbol="BTCUSDT", tick_size=D("0.01"), step_size=D("0.01"),
+            min_quantity=D("0.01"), max_quantity=D("9000"), min_notional=D("5"),
+            base_precision=2, quote_precision=2, fetched_at_ms=NOW,
+        )
+        result = PositionSizer(config.risk.sizing).size(
+            probability=0.95, payoff_ratio=5.0, price=D("125"),
+            equity=D("200"), filters=grosso_passo,
+        )
+        assert result.is_tradeable, result.reasons
+        assert result.quantity == D("0.05")  # 0.04 varrebbe 5,00, sotto 5,50
+        assert result.notional == D("6.25")
+
+    def test_il_passo_in_piu_non_sfonda_il_tetto_per_ordine(
+        self, config: AppConfig
+    ) -> None:
+        """Il tetto per ordine resta invalicabile: se il passo in piu' lo
+        supera, l'ordine non si fa e il motivo e' scritto."""
+        stretto = config.risk.sizing.model_copy(update={"max_order_quote": D("6")})
+        grosso_passo = SymbolFilters(
+            symbol="BTCUSDT", tick_size=D("0.01"), step_size=D("0.01"),
+            min_quantity=D("0.01"), max_quantity=D("9000"), min_notional=D("5"),
+            base_precision=2, quote_precision=2, fetched_at_ms=NOW,
+        )
+        result = PositionSizer(stretto).size(
+            probability=0.95, payoff_ratio=5.0, price=D("125"),
+            equity=D("200"), filters=grosso_passo,
+        )
+        assert not result.is_tradeable
+        assert any("stepSize" in motivo or "tetto" in motivo for motivo in result.reasons)
+
     def test_rispetta_il_tetto_per_ordine(self, config: AppConfig, filters: SymbolFilters) -> None:
         sizer = PositionSizer(config.risk.sizing)
         result = sizer.size(
@@ -204,13 +297,13 @@ class TestSizing:
             step_size=D("0.00001"),
             min_quantity=D("0.00001"),
             max_quantity=D("9000"),
-            min_notional=D("16"),
+            min_notional=D("5.8"),
             base_precision=5,
             quote_precision=2,
             fetched_at_ms=NOW,
         )
         sizer = PositionSizer(config.risk.sizing)
-        # equity tale da produrre un notional di ~16.2, sopra il minimo ma sotto 16 * 1.10
+        # l'ordine nominale e' 6: sopra il minimo 5,80 ma sotto 5,80 * 1,10
         result = sizer.size(
             probability=0.60,
             payoff_ratio=1.5,

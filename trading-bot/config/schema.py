@@ -20,6 +20,7 @@ from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Final
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -76,6 +77,33 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
 
 
+#: Host di produzione di Binance. Un endpoint di prova che finisce su uno di
+#: questi non e' una prova: sono ordini veri su denaro vero.
+PRODUCTION_HOST_SUFFIXES = (
+    "binance.com",
+    "binance.us",
+    "binance.je",
+    "binancezh.com",
+    "binanceapi.com",
+)
+
+
+def _host_of(url: str) -> str:
+    """Solo il nome dell'host, in minuscolo e senza porta."""
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    return host.lower()
+
+
+def _is_production_host(host: str) -> bool:
+    if "testnet" in host:
+        return False
+    return any(
+        host == suffisso or host.endswith(f".{suffisso}")
+        for suffisso in PRODUCTION_HOST_SUFFIXES
+    )
+
+
 class ExchangeConfig(_Base):
     """Endpoint e rate limit. Gli URL testnet e live sono campi distinti:
     non esiste una stringa che si trasforma da uno all'altro per sbaglio."""
@@ -106,6 +134,33 @@ class ExchangeConfig(_Base):
     def _check_backoff(self) -> ExchangeConfig:
         if self.backoff_max_s < self.backoff_initial_s:
             raise ValueError("backoff_max_s deve essere >= backoff_initial_s")
+        return self
+
+    @model_validator(mode="after")
+    def _check_hosts(self) -> ExchangeConfig:
+        """Gli indirizzi di prova non possono essere quelli veri.
+
+        La guardia sul denaro reale controlla la modalita', non l'indirizzo:
+        con ``mode: testnet`` e l'endpoint di produzione il bot invierebbe
+        ordini veri convinto di star provando, e nessun avviso comparirebbe.
+        Qui il legame fra modalita' e host diventa esplicito.
+        """
+        for campo in ("testnet_rest_url", "testnet_ws_url"):
+            host = _host_of(getattr(self, campo))
+            if _is_production_host(host):
+                raise ValueError(
+                    f"{campo}: {host} e' un indirizzo di produzione di Binance. "
+                    "In modalita' di prova gli ordini sarebbero veri. "
+                    "Usa testnet.binance.vision oppure un indirizzo locale."
+                )
+        for campo in ("live_rest_url", "live_ws_url"):
+            host = _host_of(getattr(self, campo))
+            if "testnet" in host:
+                raise ValueError(
+                    f"{campo}: {host} e' un indirizzo di prova, ma e' dichiarato "
+                    "come live. Un conto che si crede reale e opera sulla prova "
+                    "misura qualcosa che non esiste."
+                )
         return self
 
     def rest_url(self, mode: Mode) -> str:

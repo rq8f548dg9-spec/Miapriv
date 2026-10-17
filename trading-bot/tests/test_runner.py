@@ -15,7 +15,7 @@ from core.types import Candle, Fill, Order, OrderStatus, OrderType, Side, Symbol
 from data.orderbook import DepthUpdate
 from execution.broker import PaperBroker
 from execution.idempotency import OrderRegistry
-from monitoring.alerts import AlertManager
+from monitoring.alerts import Alert, AlertManager
 from monitoring.logger import DecisionLogger
 from monitoring.state import StateStore
 from runner import TradingBot, build_generator
@@ -77,6 +77,10 @@ def feed_candles(bot: TradingBot, count: int, *, symbol: str = "BTCUSDT") -> Non
     for i in range(count):
         price = (price * D("1.0005")).quantize(D("0.01"))
         bot.clock.advance_to(NOW + (i + 1) * MINUTE - 1)  # type: ignore[attr-defined]
+        # Anche il mercato finto si muove: un exchange fermo a 60.000 mentre
+        # le candele salgono crea un mondo che non esiste, e fa fallire o
+        # passare i test per il motivo sbagliato.
+        bot.broker.set_price(symbol, price)  # type: ignore[attr-defined]
         bot.on_candle(
             Candle(
                 symbol=symbol,
@@ -149,6 +153,45 @@ class TestDecisionFlow:
         feed_candles(bot, 300, symbol="ETHUSDT")
         bot.last_prices.pop("ETHUSDT", None)
         assert await bot.evaluate_symbol("ETHUSDT") is None
+
+
+class TestOrdineInviabile:
+    """Un ordine piu' piccolo del minimo della coppia non verra' mai eseguito.
+    Il bot deve dirlo all'avvio, non lasciare l'utente davanti a un pannello
+    che non opera mai senza spiegare perche'."""
+
+    @pytest.mark.asyncio
+    async def test_avvisa_se_lordine_dichiarato_e_sotto_il_minimo(
+        self, bot: TradingBot
+    ) -> None:
+        avvisi: list[str] = []
+        bot.alerts.channels = [_CanaleDiProva(avvisi)]
+        bot.broker.filters["BTCUSDT"] = SymbolFilters(  # type: ignore[attr-defined]
+            symbol="BTCUSDT", tick_size=D("0.01"), step_size=D("0.00001"),
+            min_quantity=D("0.00001"), max_quantity=D("9000"), min_notional=D("50"),
+            base_precision=5, quote_precision=2, fetched_at_ms=NOW,
+        )
+        await bot.startup()
+        assert any("50" in avviso and "BTCUSDT" in avviso for avviso in avvisi), avvisi
+
+    @pytest.mark.asyncio
+    async def test_niente_avviso_se_lordine_e_inviabile(self, bot: TradingBot) -> None:
+        avvisi: list[str] = []
+        bot.alerts.channels = [_CanaleDiProva(avvisi)]
+        await bot.startup()
+        assert not [a for a in avvisi if "minimo" in a], avvisi
+
+
+class _CanaleDiProva:
+    """Canale di allerta che raccoglie invece di scrivere."""
+
+    name = "prova"
+
+    def __init__(self, raccolta: list[str]) -> None:
+        self.raccolta = raccolta
+
+    def send(self, alert: Alert) -> None:
+        self.raccolta.append(f"{alert.title} {alert.detail}")
 
 
 class TestResilienza:

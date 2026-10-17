@@ -195,6 +195,7 @@ class TradingBot:
         """
         self.filters = await self.broker.exchange_filters()
         logger.info("filtri letti da exchangeInfo per %d simboli", len(self.filters))
+        self.check_order_size_feasible()
 
         resolved, fills = await self.reconciler.resolve_pending_orders()
         if resolved:
@@ -217,6 +218,42 @@ class TradingBot:
             self.snapshot_state(force=True)
 
         self.decision_log.log_equity(self.clock.now_ms(), self.portfolio.equity, evento="avvio")
+
+    def check_order_size_feasible(self) -> list[str]:
+        """Avvisa se l'ordine dichiarato e' piu' piccolo del minimo di coppia.
+
+        E' il silenzio peggiore: il bot gira, non sbaglia nulla, e non opera
+        mai. Ogni decisione verrebbe rifiutata dal dimensionamento, e chi
+        guarda il pannello vedrebbe solo un bot fermo senza sapere che basta
+        alzare un numero.
+        """
+        sizing = self.config.risk.sizing
+        margine = Decimal(str(sizing.min_notional_safety_factor))
+        problemi: list[str] = []
+        for symbol_config in self.config.enabled_symbols:
+            filters = self.filters.get(symbol_config.symbol)
+            if filters is None:
+                continue
+            richiesto = filters.min_notional * margine
+            if sizing.target_order_quote >= richiesto:
+                continue
+            problemi.append(
+                f"{symbol_config.symbol}: ordine dichiarato "
+                f"{sizing.target_order_quote} {self.config.quote_asset}, ma "
+                f"l'exchange ne chiede almeno {filters.min_notional} e il margine "
+                f"di sicurezza porta il minimo a {richiesto:.2f}. Finche' resta "
+                f"cosi' nessun ordine su questa coppia potra' partire: alza "
+                f"\"valore di un ordine\" ad almeno {richiesto:.2f}."
+            )
+        for problema in problemi:
+            logger.error("%s", problema)
+            self.alerts.notify(
+                key=f"sizing:{problema.split(':')[0]}",
+                title="ORDINE PIU' PICCOLO DEL MINIMO DELLA COPPIA",
+                detail=problema,
+                severity=Severity.CRITICAL,
+            )
+        return problemi
 
     async def _initial_prices(self) -> dict[str, Decimal]:
         """Prezzi correnti dal book, per valutare le posizioni esistenti."""

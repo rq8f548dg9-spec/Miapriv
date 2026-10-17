@@ -382,11 +382,14 @@ const INFO = {
     esempio: 'Tienilo uguale alla cifra che useresti davvero.',
   },
   ordine_target: {
-    titolo: 'Valore di riferimento di un ordine',
-    testo: `Serve solo a <strong>stimare i costi</strong> prima di decidere. La taglia
-      vera di ogni ordine la calcola la formula di Kelly: più il segnale è forte, più
-      l'ordine è grande, sempre dentro i limiti qui accanto.`,
-    esempio: 'Per ordini più piccoli agisci su «Ordine massimo», non su questo campo.',
+    titolo: 'Valore di un ordine',
+    testo: `È <strong>quanto vale un ordine</strong>: il bot non lo supera mai. La
+      formula di Kelly può solo ridurlo quando il segnale è debole, e se lo riduce
+      troppo l'ordine non si fa. Attenzione al minimo di Binance: su molte coppie
+      è 5 USDT, e il bot ne chiede il 10% in più per non farsi rifiutare l'ordine
+      al primo movimento del prezzo. Se metti meno del minimo, il bot te lo dice
+      all'avvio e non opererà su quella coppia.`,
+    esempio: 'Con 200 di capitale, 6 è un ordine piccolo e inviabile.',
   },
   ordine_massimo: {
     titolo: 'Ordine massimo',
@@ -842,7 +845,7 @@ $('filter-decisions').onchange = renderDecisions;
 
 const SETTINGS_FIELDS = [
   ['capitale', 'Capitale che il bot può usare', 'number', 1],
-  ['ordine_target', 'Valore di riferimento di un ordine', 'number', 0.1],
+  ['ordine_target', 'Valore di un ordine', 'number', 0.1],
   ['ordine_massimo', 'Ordine massimo', 'number', 0.1],
   ['posizioni_massime', 'Posizioni aperte al massimo', 'number', 1],
   ['esposizione_massima', 'Esposizione massima totale', 'number', 1],

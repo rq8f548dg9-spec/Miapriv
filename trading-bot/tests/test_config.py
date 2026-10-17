@@ -43,6 +43,47 @@ class TestDefaultConfig:
         assert "testnet" in testnet.rest_url
         assert "testnet" in testnet.ws_url
 
+    @pytest.mark.parametrize(
+        "campo,valore",
+        [
+            ("testnet_rest_url", "https://api.binance.com"),
+            ("testnet_rest_url", "https://api3.binance.com"),
+            ("testnet_ws_url", "wss://stream.binance.com:9443/stream"),
+        ],
+    )
+    def test_la_prova_non_puo_puntare_al_mercato_vero(
+        self,
+        base_config_dict: dict[str, Any],
+        write_config: WriteConfig,
+        campo: str,
+        valore: str,
+    ) -> None:
+        """Con mode=testnet e l'endpoint di produzione, il bot opererebbe con
+        denaro vero credendo di provare. La guardia sul denaro reale non
+        guarda l'indirizzo: deve guardarlo la configurazione."""
+        base_config_dict["exchange"][campo] = valore
+        with pytest.raises(ValueError, match=r"produzione|testnet"):
+            load_config(write_config(base_config_dict))
+
+    def test_un_endpoint_finto_locale_resta_ammesso(
+        self, base_config_dict: dict[str, Any], write_config: WriteConfig
+    ) -> None:
+        """Puntare a un server finto sul proprio computer e' il modo normale
+        di provare il bot senza toccare Binance."""
+        base_config_dict["exchange"]["testnet_rest_url"] = "http://127.0.0.1:8080"
+        base_config_dict["exchange"]["testnet_ws_url"] = "ws://127.0.0.1:8080/stream"
+        config = load_config(write_config(base_config_dict))
+        assert config.rest_url == "http://127.0.0.1:8080"
+
+    def test_gli_url_live_non_possono_puntare_alla_testnet(
+        self, base_config_dict: dict[str, Any], write_config: WriteConfig
+    ) -> None:
+        """Il contrario e' meno grave ma e' comunque una bugia: un conto
+        dichiarato reale che opera sulla prova non e' quello che si crede."""
+        base_config_dict["exchange"]["live_rest_url"] = "https://testnet.binance.vision"
+        with pytest.raises(ValueError, match=r"live|testnet"):
+            load_config(write_config(base_config_dict))
+
 
 class TestLiveGuard:
     """La guardia e' l'unico punto che autorizza il denaro reale."""
