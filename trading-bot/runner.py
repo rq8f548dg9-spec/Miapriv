@@ -657,12 +657,13 @@ class TradingBot:
                 for symbol, position in self.portfolio.positions.items()
                 if not position.is_flat
             }
-            if rimaste:
+            pending = self.registry.pending_ids()
+            if rimaste or pending:
                 logger.critical("chiusura forzata incompleta, restano: %s", rimaste)
                 self.alerts.notify(
                     key="flatten:incompleto",
                     title="CHIUSURA FORZATA INCOMPLETA",
-                    detail=f"posizioni ancora aperte dopo lo stop: {rimaste}",
+                    detail=f"posizioni dopo lo stop: {rimaste}; ordini irrisolti: {pending}",
                     severity=Severity.CRITICAL,
                 )
             else:
@@ -701,7 +702,10 @@ class TradingBot:
             if symbol is None:
                 continue
             try:
-                riuscito = await self.broker.cancel(symbol, order_id)
+                await self.broker.cancel(symbol, order_id)
+                # Una cancellazione puo' concorrere con un'esecuzione. Il
+                # booleano non descrive i fill: rileggere lo stato completo.
+                ack = await self.broker.order_status(symbol, order_id)
             except BrokerError as exc:
                 logger.critical("annullamento di %s fallito: %s", order_id, exc)
                 self.alerts.notify(
@@ -714,13 +718,17 @@ class TradingBot:
                     severity=Severity.CRITICAL,
                 )
                 continue
-            if riuscito:
-                self.registry.update(order_id, status=OrderStatus.CANCELED)
+            if ack is None:
+                logger.error("stato di %s sconosciuto dopo cancellazione: resta pending", order_id)
+                continue
+            for fill in ack.fills:
+                self.apply_fill(fill)
+            self.registry.update(
+                order_id, status=ack.status, exchange_order_id=ack.exchange_order_id,
+                filled_quantity=ack.filled_quantity,
+            )
+            if ack.status is OrderStatus.CANCELED:
                 annullati += 1
-            else:
-                # Non annullabile vuol dire gia' concluso: il suo destino lo
-                # stabilisce la riconciliazione, non un'ipotesi.
-                logger.warning("ordine %s non annullabile, gia' concluso?", order_id)
         if annullati:
             logger.critical("annullati %d ordini ancora in volo", annullati)
         return annullati
