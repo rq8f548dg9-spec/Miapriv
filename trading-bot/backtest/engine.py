@@ -45,7 +45,8 @@ from core.types import (
 )
 from features.engine import FeatureEngine
 from risk.manager import MarketContext, RiskManager
-from signals.base import SignalGenerator
+from risk.plan import PianoDiUscita, piano_di_uscita
+from signals.base import SignalGenerator, TradePlan
 
 __all__ = ["BacktestEngine", "BacktestResult", "default_filters"]
 
@@ -153,6 +154,11 @@ class BacktestEngine:
         # successiva ma a quella in cui l'ordine sarebbe davvero arrivato.
         pending: dict[str, tuple[Order, TimestampMs]] = {}
         ultimi_prezzi: dict[str, Decimal] = {}
+        # Stop e target delle posizioni aperte, come nel bot vero: senza, la
+        # simulazione esce al cambio del punteggio e misura una gestione del
+        # rischio diversa da quella che gira dal vivo.
+        piani: dict[str, PianoDiUscita] = {}
+        piani_in_attesa: dict[str, TradePlan] = {}
         latenza_ms = self.costs.config.latency_ms
 
         def esposizione_in_volo() -> dict[str, Decimal]:
@@ -216,6 +222,14 @@ class BacktestEngine:
                         result = portfolio.apply_fill(fill)
                         if result is not None:
                             trades.append(result)
+                        piano_atteso = piani_in_attesa.pop(candle.symbol, None)
+                        posizione = portfolio.positions.get(candle.symbol)
+                        if posizione is None or posizione.is_flat:
+                            piani.pop(candle.symbol, None)
+                        elif piano_atteso is not None:
+                            piani[candle.symbol] = piano_di_uscita(
+                                candle.symbol, posizione, piano_atteso, clock.now_ms()
+                            )
                 continue
 
             # --- chiusura barra: solo ora la candela e' osservabile
@@ -257,6 +271,34 @@ class BacktestEngine:
                 if not chiusure and not portfolio.snapshot(clock.now_ms()).open_positions:
                     risk.killswitch.mark_flattened()
 
+            # --- stop e target: valgono prima di qualunque nuova decisione
+            piano = piani.get(candle.symbol)
+            posizione_corrente = portfolio.positions.get(candle.symbol)
+            if piano is not None and (
+                posizione_corrente is None or posizione_corrente.is_flat
+            ):
+                piani.pop(candle.symbol, None)
+            elif (
+                piano is not None
+                and posizione_corrente is not None
+                and candle.symbol not in pending
+            ):
+                livello = piano.violato_da(candle.close)
+                if livello is not None:
+                    uscita = risk.close_position(
+                        symbol=candle.symbol,
+                        quantity=posizione_corrente.quantity,
+                        price=candle.close,
+                        filters=self.filters.get(candle.symbol)
+                        or default_filters(candle.symbol, fetched_at_ms=clock.now_ms()),
+                        origine=livello,
+                    )
+                    if uscita is not None:
+                        pending[candle.symbol] = (uscita, clock.now_ms() + latenza_ms)
+                        piani.pop(candle.symbol, None)
+                        submitted += 1
+                        continue
+
             # --- decisione per la barra successiva
             if candle.symbol in pending:
                 continue  # c'e' gia' un ordine in volo su questo simbolo
@@ -291,6 +333,8 @@ class BacktestEngine:
             )
             if decision.approved and decision.order is not None:
                 pending[candle.symbol] = (decision.order, clock.now_ms() + latenza_ms)
+                if decision.order.side is Side.BUY:
+                    piani_in_attesa[candle.symbol] = proposal.plan
                 submitted += 1
             else:
                 rejected += 1

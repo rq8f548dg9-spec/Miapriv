@@ -264,6 +264,25 @@ class TestChiusuraDEmergenzaNelBacktest:
         assert residuo == 0, f"restano {residuo} in portafoglio dopo lo stop"
 
 
+class TestPianoDiUscitaNelBacktest:
+    def test_lo_stop_chiude_anche_nella_simulazione(self, config: AppConfig) -> None:
+        """Se dal vivo la posizione esce allo stop e nel backtest no, i due
+        sistemi non sono lo stesso sistema e il risultato non vale."""
+        discesa = [
+            *synthetic_candles(300),
+            *crollo(
+                20, start_price=D("60000"), start_ms=START + 300 * 60_000, passo="0.01"
+            ),
+        ]
+        compratore = SoloAcquisti()  # compra una volta e non vende mai
+        risultato = BacktestEngine(config, compratore).run(discesa)
+
+        acquisti = [f for f in risultato.fills if f.side is Side.BUY]
+        vendite = [f for f in risultato.fills if f.side is Side.SELL]
+        assert acquisti, "senza acquisti il test non prova niente"
+        assert vendite, "la posizione non e' uscita allo stop"
+
+
 class TestEsecuzionePossibile:
     def _ordine(self, quantita: str) -> Order:
         return Order(

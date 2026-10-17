@@ -37,7 +37,7 @@ from core.types import (
 from data.ingest import MarketDataIngestor
 from data.orderbook import ApplyResult, DepthUpdate, OrderBookState
 from data.store import ParquetStore
-from execution.binance import AiohttpClient, BinanceBroker
+from execution.binance import AiohttpClient, AmbiguousRequestError, BinanceBroker
 from execution.broker import Broker, BrokerError, PaperBroker
 from execution.idempotency import DuplicateOrderError, OrderRegistry, client_order_id
 from execution.reconcile import Reconciler
@@ -46,10 +46,12 @@ from monitoring.alerts import AlertManager, LogChannel, Severity
 from monitoring.logger import DecisionLogger
 from monitoring.state import StateStore
 from risk.manager import MarketContext, RiskManager
-from signals.base import SignalGenerator
+from risk.plan import PianoDiUscita, piano_di_uscita
+from signals.base import SignalGenerator, TradePlan
 from signals.rules import RuleBasedSignalGenerator
 
 __all__ = ["TradingBot", "build_bot"]
+
 
 logger = logging.getLogger("trading_bot.runner")
 
@@ -114,6 +116,8 @@ class TradingBot:
     needs_resync: set[str] = field(default_factory=set)
     last_order_latency_ms: float | None = None
     running: bool = False
+    #: Stop e target delle posizioni aperte, per simbolo.
+    active_plans: dict[str, PianoDiUscita] = field(default_factory=dict)
     _saved_peak_equity: Decimal | None = field(default=None, repr=False)
     _saved_day_start_equity: Decimal | None = field(default=None, repr=False)
     _day_key: str = field(default="", repr=False)
@@ -145,6 +149,15 @@ class TradingBot:
             # in backtest e in carta quella ricostruzione non avviene, e i
             # riferimenti del drawdown ripartirebbero comunque da zero.
             self._restore_drawdown_references()
+            # Senza i piani, dopo un riavvio la posizione resterebbe senza
+            # rete: nessuno la chiuderebbe piu' allo stop con cui e' stata
+            # aperta, e il rischio vero non somiglierebbe piu' a quello
+            # dichiarato quando e' stata dimensionata.
+            for symbol, piano in saved.exit_plans.items():
+                try:
+                    self.active_plans[symbol] = PianoDiUscita.from_dict(symbol, piano)
+                except (KeyError, ValueError, ArithmeticError):
+                    logger.error("piano di uscita illeggibile per %s, ignorato", symbol)
 
         self.reconciler = Reconciler(
             broker=self.broker,
@@ -382,7 +395,72 @@ class TradingBot:
         if not decision.approved or decision.order is None:
             return None
         await self.submit(decision.order)
+        self._aggiorna_piano(symbol, proposal.plan)
         return decision.order
+
+    def _aggiorna_piano(self, symbol: str, plan: TradePlan) -> None:
+        """Fissa stop e target sulla posizione, o li dimentica se e' chiusa.
+
+        I livelli si calcolano sul prezzo di carico effettivo, non sul
+        prezzo visto al momento della decisione: fra i due c'e' lo slippage,
+        e lo stop va dove protegge davvero.
+        """
+        position = self.portfolio.positions.get(symbol)
+        if position is None or position.is_flat:
+            self.active_plans.pop(symbol, None)
+            return
+        if position.average_entry_price <= 0:
+            return
+        self.active_plans[symbol] = piano_di_uscita(
+            symbol, position, plan, self.clock.now_ms()
+        )
+
+    async def check_protective_exits(self) -> int:
+        """Chiude le posizioni che hanno toccato il loro stop o il target.
+
+        E' il piano con cui la posizione e' stata aperta: Kelly ha
+        dimensionato una scommessa che perde lo stop o vince il target, e
+        se nessuno la chiude a quei livelli il rischio corso non e' quello
+        misurato. Vale anche a kill switch fermo: chiudere e' sempre
+        permesso.
+        """
+        chiuse = 0
+        for symbol, piano in list(self.active_plans.items()):
+            position = self.portfolio.positions.get(symbol)
+            if position is None or position.is_flat:
+                self.active_plans.pop(symbol, None)
+                continue
+            price = self.last_prices.get(symbol)
+            if price is None:
+                continue
+            livello = piano.violato_da(price)
+            if livello is None:
+                continue
+            symbol_filters = self.filters.get(symbol)
+            if symbol_filters is None:
+                logger.error("niente filtri per %s: impossibile chiudere allo %s", symbol, livello)
+                continue
+            order = self.risk.close_position(
+                symbol=symbol,
+                quantity=position.quantity,
+                price=price,
+                filters=symbol_filters,
+                origine=livello,
+            )
+            if order is None:
+                continue
+            logger.info(
+                "%s raggiunto su %s a %s (carico %s): chiusura",
+                livello,
+                symbol,
+                price,
+                piano.entry_price,
+            )
+            await self.submit(order)
+            if self.portfolio.positions[symbol].is_flat:
+                self.active_plans.pop(symbol, None)
+                chiuse += 1
+        return chiuse
 
     def pending_exposure(self) -> dict[str, Decimal]:
         """Controvalore degli acquisti inviati e non ancora conclusi.
@@ -415,6 +493,22 @@ class TradingBot:
         started_ns = self.clock.monotonic_ns()
         try:
             ack = await self.broker.submit(deterministic)
+        except AmbiguousRequestError as exc:
+            # Non si sa se l'ordine sia arrivato. Marcarlo rifiutato lo
+            # toglierebbe dagli ordini da risolvere, e se l'exchange lo
+            # aveva eseguito quella posizione non la gestirebbe piu'
+            # nessuno. Resta in sospeso: lo chiarira' la riconciliazione.
+            logger.error("esito sconosciuto per %s: %s", deterministic.client_order_id, exc)
+            self.alerts.notify(
+                key=f"order:ambiguo:{deterministic.client_order_id}",
+                title="ESITO DELL'ORDINE SCONOSCIUTO",
+                detail=(
+                    f"{deterministic.client_order_id} su {deterministic.symbol}: {exc}. "
+                    "Resta in sospeso fino alla riconciliazione."
+                ),
+                severity=Severity.CRITICAL,
+            )
+            return
         except BrokerError as exc:
             self.registry.update(deterministic.client_order_id, status=OrderStatus.REJECTED)
             self.alerts.order_rejected(deterministic.client_order_id, str(exc))
@@ -580,6 +674,9 @@ class TradingBot:
                 self.portfolio,
                 self.risk.killswitch,
                 baseline_holdings=self.reconciler.baseline_holdings,
+                exit_plans={
+                    symbol: piano.to_dict() for symbol, piano in self.active_plans.items()
+                },
             ),
             force=force,
         )
@@ -629,6 +726,11 @@ class TradingBot:
                 self.portfolio.start_new_day(day_key)
 
             await self._safely("riallineamento book", self.resync_books())
+
+            # Stop e target prima di qualunque nuova valutazione: una
+            # posizione che ha toccato il suo livello va chiusa adesso, non
+            # dopo aver deciso se aprirne un'altra.
+            await self._safely("uscite protettive", self.check_protective_exits())
 
             for symbol_config in self.config.enabled_symbols:
                 await self._safely(

@@ -257,50 +257,74 @@ class RiskManager:
         l'exchange non consente di liquidare (residuo sotto MIN_NOTIONAL) viene
         saltata e segnalata nei log, non ritentata all'infinito.
         """
-        now_ms = self.clock.now_ms()
         orders: list[Order] = []
         for symbol, position in snapshot.open_positions.items():
             symbol_filters = filters.get(symbol)
             price = prices.get(symbol)
             if symbol_filters is None or price is None:
                 continue
-            sizing = self.sizer.size_to_close(
-                quantity_to_close=position.quantity, price=price, filters=symbol_filters
+            order = self.close_position(
+                symbol=symbol,
+                quantity=position.quantity,
+                price=price,
+                filters=symbol_filters,
+                origine="killswitch",
             )
-            if not sizing.is_tradeable:
-                self.decisions.append(
-                    Decision(
-                        ts_ms=now_ms,
-                        symbol=symbol,
-                        signal=None,
-                        approved=False,
-                        rejection_reasons=sizing.reasons,
-                        risk_snapshot={"azione": "flatten", "posizione": str(position.quantity)},
-                        mode=self.config.mode.value,
-                    )
-                )
-                continue
-            side = Side.SELL if position.quantity > 0 else Side.BUY
-            orders.append(
-                Order(
-                    client_order_id=self.client_order_id_factory(
-                        symbol=symbol,
-                        side=side,
-                        quantity=sizing.quantity,
-                        intent=OrderIntent.CLOSE.value,
-                        ts_ms=now_ms,
-                    ),
-                    symbol=symbol,
-                    side=side,
-                    order_type=OrderType.MARKET,
-                    quantity=sizing.quantity,
-                    created_at_ms=now_ms,
-                    time_in_force=TimeInForce.IOC,
-                    reduce_only=True,
-                    metadata={"intent": OrderIntent.CLOSE.value, "origine": "killswitch"},
-                )
-            )
+            if order is not None:
+                orders.append(order)
         return orders
+
+    def close_position(
+        self,
+        *,
+        symbol: str,
+        quantity: Decimal,
+        price: Decimal,
+        filters: SymbolFilters,
+        origine: str,
+    ) -> Order | None:
+        """Ordine che chiude la posizione su un simbolo, o ``None``.
+
+        Non passa dai limiti: chiudere e' sempre permesso. Una posizione che
+        l'exchange non consente di liquidare (residuo sotto MIN_NOTIONAL)
+        viene saltata e la ragione finisce fra le decisioni, cosi' resta
+        visibile invece di diventare un tentativo ripetuto all'infinito.
+        """
+        now_ms = self.clock.now_ms()
+        sizing = self.sizer.size_to_close(
+            quantity_to_close=quantity, price=price, filters=filters
+        )
+        if not sizing.is_tradeable:
+            self.decisions.append(
+                Decision(
+                    ts_ms=now_ms,
+                    symbol=symbol,
+                    signal=None,
+                    approved=False,
+                    rejection_reasons=sizing.reasons,
+                    risk_snapshot={"azione": origine, "posizione": str(quantity)},
+                    mode=self.config.mode.value,
+                )
+            )
+            return None
+        side = Side.SELL if quantity > 0 else Side.BUY
+        return Order(
+            client_order_id=self.client_order_id_factory(
+                symbol=symbol,
+                side=side,
+                quantity=sizing.quantity,
+                intent=OrderIntent.CLOSE.value,
+                ts_ms=now_ms,
+            ),
+            symbol=symbol,
+            side=side,
+            order_type=OrderType.MARKET,
+            quantity=sizing.quantity,
+            created_at_ms=now_ms,
+            time_in_force=TimeInForce.IOC,
+            reduce_only=True,
+            metadata={"intent": OrderIntent.CLOSE.value, "origine": origine},
+        )
 
     # -- interno ----------------------------------------------------------
 

@@ -237,22 +237,31 @@ class BinanceBroker(Broker):
         assert self.limiter is not None
         parameters = dict(params or {})
         headers: dict[str, str] = {}
-
         if signed:
-            parameters["timestamp"] = self.clock.now_ms()
-            parameters["recvWindow"] = self.config.exchange.recv_window_ms
-            query = self._sign(parameters)
             headers["X-MBX-APIKEY"] = self.credentials.api_key.get_secret_value()
-        else:
-            query = urlencode(parameters)
 
-        url = f"{self.base_url}{path}"
-        if query:
-            url = f"{url}?{query}"
+        def indirizzo() -> str:
+            """URL del tentativo corrente, firmato adesso.
+
+            La firma include l'istante e vale quanto ``recvWindow``, cioe'
+            pochi secondi. Firmare una volta sola prima del ciclo fa
+            arrivare il tentativo dopo il backoff con un orario gia'
+            scaduto: l'exchange lo rifiuta, e il retry e' sprecato proprio
+            quando serviva.
+            """
+            if signed:
+                firmati = dict(parameters)
+                firmati["timestamp"] = self.clock.now_ms()
+                firmati["recvWindow"] = self.config.exchange.recv_window_ms
+                query = self._sign(firmati)
+            else:
+                query = urlencode(parameters)
+            return f"{self.base_url}{path}?{query}" if query else f"{self.base_url}{path}"
 
         delay = self.config.exchange.backoff_initial_s
         last_error = ""
         for attempt in range(self.config.exchange.max_retries + 1):
+            url = indirizzo()
             await self.limiter.acquire(weight)
             self.requests_sent += 1
             response = await self.http.request(

@@ -259,6 +259,45 @@ class TestRetry:
         assert broker.retries == 1
 
     @pytest.mark.asyncio
+    async def test_il_tentativo_successivo_viene_rifirmato(
+        self, config: AppConfig, credentials: Credentials
+    ) -> None:
+        """La firma include l'istante e vale pochi secondi (recvWindow).
+
+        Firmandola una volta sola prima del ciclo, dopo un backoff di
+        decine di secondi il secondo tentativo arriva con un orario
+        scaduto: l'exchange lo rifiuta, e il retry e' sprecato proprio
+        quando serviva."""
+        import asyncio
+        from urllib.parse import parse_qs, urlparse
+
+        http = FakeHttp(
+            [
+                HttpResponse(503, {"msg": "service unavailable"}),
+                HttpResponse(200, {"balances": [], "canTrade": True}),
+            ]
+        )
+        clock = SimulatedClock(NOW)
+        broker = BinanceBroker(
+            config=config, credentials=credentials, clock=clock, http=http
+        )
+        http.responses.append(HttpResponse(200, []))  # openOrders
+
+        task = asyncio.create_task(broker.account_state())
+        for _ in range(60):
+            await asyncio.sleep(0)
+            if task.done():
+                break
+            wake = clock.next_wakeup_ms()
+            if wake is not None:
+                clock.advance_to(wake)
+        await asyncio.wait_for(task, timeout=2)
+
+        primi_due = [parse_qs(urlparse(url).query) for _, url, _ in http.requests[:2]]
+        assert primi_due[0]["timestamp"] != primi_due[1]["timestamp"]
+        assert primi_due[0]["signature"] != primi_due[1]["signature"]
+
+    @pytest.mark.asyncio
     async def test_i_4xx_non_vengono_ritentati(
         self, config: AppConfig, credentials: Credentials
     ) -> None:

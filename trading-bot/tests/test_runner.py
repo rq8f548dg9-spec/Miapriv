@@ -13,7 +13,7 @@ from core.clock import SimulatedClock
 from core.portfolio import Portfolio
 from core.types import Candle, Fill, Order, OrderStatus, OrderType, Side, SymbolFilters, Trade
 from data.orderbook import DepthUpdate
-from execution.broker import PaperBroker
+from execution.broker import OrderAck, PaperBroker
 from execution.idempotency import OrderRegistry
 from monitoring.alerts import Alert, AlertManager
 from monitoring.logger import DecisionLogger
@@ -159,6 +159,127 @@ class TestDecisionFlow:
         feed_candles(bot, 300, symbol="ETHUSDT")
         bot.last_prices.pop("ETHUSDT", None)
         assert await bot.evaluate_symbol("ETHUSDT") is None
+
+
+class TestPianoDiUscita:
+    """A29: stop e take profit servivano solo a calcolare il payoff per
+    Kelly, e poi nessuno li eseguiva. La posizione usciva al cambio del
+    punteggio, non al raggiungimento del piano: la scommessa binaria su cui
+    si dimensiona non somigliava a come veniva gestita davvero."""
+
+    @pytest.mark.asyncio
+    async def test_lo_stop_chiude_la_posizione(self, bot: TradingBot) -> None:
+        feed_candles(bot, 300)
+        await bot.evaluate_symbol("BTCUSDT")
+        posizione = bot.portfolio.positions["BTCUSDT"]
+        assert not posizione.is_flat
+        piano = bot.active_plans["BTCUSDT"]
+        assert piano.stop_price < posizione.average_entry_price
+
+        # il prezzo sfonda lo stop
+        prezzo = piano.stop_price - D("1")
+        bot.last_prices["BTCUSDT"] = prezzo
+        bot.broker.set_price("BTCUSDT", prezzo)  # type: ignore[attr-defined]
+        await bot.check_protective_exits()
+
+        assert bot.portfolio.positions["BTCUSDT"].is_flat
+        assert "BTCUSDT" not in bot.active_plans
+
+    @pytest.mark.asyncio
+    async def test_il_target_chiude_la_posizione(self, bot: TradingBot) -> None:
+        feed_candles(bot, 300)
+        await bot.evaluate_symbol("BTCUSDT")
+        piano = bot.active_plans["BTCUSDT"]
+
+        prezzo = piano.target_price + D("1")
+        bot.last_prices["BTCUSDT"] = prezzo
+        bot.broker.set_price("BTCUSDT", prezzo)  # type: ignore[attr-defined]
+        await bot.check_protective_exits()
+
+        assert bot.portfolio.positions["BTCUSDT"].is_flat
+
+    @pytest.mark.asyncio
+    async def test_dentro_il_piano_non_si_chiude(self, bot: TradingBot) -> None:
+        feed_candles(bot, 300)
+        await bot.evaluate_symbol("BTCUSDT")
+        piano = bot.active_plans["BTCUSDT"]
+
+        bot.last_prices["BTCUSDT"] = (piano.stop_price + piano.target_price) / D(2)
+        await bot.check_protective_exits()
+        assert not bot.portfolio.positions["BTCUSDT"].is_flat
+
+    @pytest.mark.asyncio
+    async def test_il_ciclo_principale_controlla_i_livelli(
+        self, bot: TradingBot
+    ) -> None:
+        """Il controllo esiste solo se qualcuno lo chiama: senza il giro nel
+        ciclo principale lo stop resterebbe un numero scritto da nessuna
+        parte."""
+        feed_candles(bot, 300)
+        await bot.evaluate_symbol("BTCUSDT")
+        piano = bot.active_plans["BTCUSDT"]
+        prezzo = piano.stop_price - D("1")
+        bot.last_prices["BTCUSDT"] = prezzo
+        bot.broker.set_price("BTCUSDT", prezzo)  # type: ignore[attr-defined]
+
+        bot.running = True
+        await bot._supervise(max_iterations=1)
+
+        assert bot.portfolio.positions["BTCUSDT"].is_flat
+
+    @pytest.mark.asyncio
+    async def test_il_piano_sopravvive_al_riavvio(self, bot: TradingBot) -> None:
+        """Un riavvio che perde lo stop lascia la posizione senza rete."""
+        feed_candles(bot, 300)
+        await bot.evaluate_symbol("BTCUSDT")
+        piano = bot.active_plans["BTCUSDT"]
+        bot.snapshot_state(force=True)
+
+        risorto = make_bot(bot.config, Path(bot.state_store.path).parent)
+        assert "BTCUSDT" in risorto.active_plans
+        assert risorto.active_plans["BTCUSDT"].stop_price == piano.stop_price
+
+
+class TestEsitoSconosciuto:
+    """Un invio che non si sa come sia finito non e' un rifiuto. Marcarlo
+    rifiutato lo toglie dalla riconciliazione: se l'exchange lo aveva
+    eseguito, quella posizione non la gestisce piu' nessuno."""
+
+    @pytest.mark.asyncio
+    async def test_un_timeout_lascia_lordine_da_risolvere(
+        self, bot: TradingBot
+    ) -> None:
+        from execution.binance import AmbiguousRequestError
+
+        async def sparisce(order: Order) -> OrderAck:
+            raise AmbiguousRequestError("POST /api/v3/order con esito sconosciuto")
+
+        bot.broker.submit = sparisce  # type: ignore[method-assign]
+        ordine = Order(
+            client_order_id="tb-sconosciuto", symbol="BTCUSDT", side=Side.BUY,
+            order_type=OrderType.MARKET, quantity=D("0.0001"), created_at_ms=NOW,
+        )
+        await bot.submit(ordine)
+
+        assert "tb-sconosciuto" in bot.registry.pending_ids()
+        assert bot.registry.status_of("tb-sconosciuto") is not OrderStatus.REJECTED
+
+    @pytest.mark.asyncio
+    async def test_un_rifiuto_vero_resta_un_rifiuto(self, bot: TradingBot) -> None:
+        from execution.broker import BrokerError
+
+        async def rifiuta(order: Order) -> OrderAck:
+            raise BrokerError("POST /api/v3/order rifiutata dall'exchange - filtro violato")
+
+        bot.broker.submit = rifiuta  # type: ignore[method-assign]
+        ordine = Order(
+            client_order_id="tb-rifiutato", symbol="BTCUSDT", side=Side.BUY,
+            order_type=OrderType.MARKET, quantity=D("0.0001"), created_at_ms=NOW,
+        )
+        await bot.submit(ordine)
+
+        assert bot.registry.status_of("tb-rifiutato") is OrderStatus.REJECTED
+        assert "tb-rifiutato" not in bot.registry.pending_ids()
 
 
 class TestOrdiniInVolo:

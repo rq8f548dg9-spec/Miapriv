@@ -34,7 +34,7 @@ logger = logging.getLogger("trading_bot.state")
 #: Versione 2: aggiunge le monete gia' presenti sul conto (baseline). Uno
 #: stato di versione 1 non la contiene, e senza di essa non si puo' dire
 #: quali monete appartengano al bot: viene scartato e si riparte dai saldi.
-STATE_VERSION = 3
+STATE_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +59,10 @@ class BotState:
     killswitch_tripped_at_ms: TimestampMs | None = None
     #: Monete presenti sul conto prima che il bot iniziasse: non sono sue.
     baseline_holdings: dict[str, str] = field(default_factory=dict)
+    #: Stop e target delle posizioni aperte, per simbolo. Un riavvio che li
+    #: perdesse lascerebbe la posizione senza rete: nessuno la chiuderebbe
+    #: piu' al raggiungimento del piano con cui e' stata aperta.
+    exit_plans: dict[str, dict[str, str]] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -95,6 +99,10 @@ class BotState:
             baseline_holdings={
                 str(k): str(v) for k, v in dict(payload.get("baseline_holdings", {})).items()
             },
+            exit_plans={
+                str(symbol): {str(k): str(v) for k, v in dict(piano).items()}
+                for symbol, piano in dict(payload.get("exit_plans", {})).items()
+            },
             extra=dict(payload.get("extra", {})),
         )
 
@@ -119,6 +127,7 @@ class StateStore:
         killswitch: KillSwitch,
         *,
         baseline_holdings: dict[str, Decimal] | None = None,
+        exit_plans: dict[str, dict[str, str]] | None = None,
         **extra: Any,
     ) -> BotState:
         last_event = killswitch.last_event
@@ -145,6 +154,7 @@ class StateStore:
                 symbol: str(quantity)
                 for symbol, quantity in (baseline_holdings or {}).items()
             },
+            exit_plans=dict(exit_plans or {}),
             extra=dict(extra),
         )
 
