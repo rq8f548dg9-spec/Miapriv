@@ -209,6 +209,7 @@ class BacktestEngine:
                     price=candle.close,
                     filters=symbol_filters,
                     payoff_ratio=proposal.plan.payoff_ratio,
+                    data_age_ms=vector.values.get("candle_age_ms", float("inf")),
                     expected_move_bps=proposal.plan.expected_move_bps,
                     available_quote=portfolio.cash,
                     estimated_cost_bps=self.costs.round_trip_bps(

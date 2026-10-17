@@ -82,6 +82,10 @@ class MarketContext:
     price: Decimal
     filters: SymbolFilters
     payoff_ratio: float
+    #: Eta' del dato su cui si sta decidendo, in millisecondi. Non ha un
+    #: default: ogni chiamante deve dichiararla, perche' "non lo so" e
+    #: "e' fresca" non sono la stessa cosa e il secondo apre posizioni.
+    data_age_ms: float
     expected_move_bps: float = 0.0
     available_quote: Decimal | None = None
     last_order_latency_ms: float | None = None
@@ -175,6 +179,17 @@ class RiskManager:
             reasons.append(
                 f"filtri di {signal.symbol} non aggiornati "
                 f"(letti a {context.filters.fetched_at_ms}): vanno riletti da exchangeInfo"
+            )
+
+        # Il vettore puo' essere completo (barre a sufficienza, ATR calcolato)
+        # e vecchio di un giorno: il conteggio delle barre non dice quando
+        # sono arrivate. Aprire su un prezzo di ieri e' peggio che non aprire.
+        soglia_ms = self.config.risk.killswitch.max_data_staleness_ms
+        if intent.adds_exposure and context.data_age_ms > soglia_ms:
+            reasons.append(
+                f"dati vecchi di {context.data_age_ms:.0f} ms su {signal.symbol} "
+                f"(limite {soglia_ms} ms): non si apre su un prezzo che non "
+                "sappiamo se e' ancora quello"
             )
 
         reasons.extend(self._check_signal_quality(signal, context, intent))

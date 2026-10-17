@@ -155,6 +155,28 @@ class TestDecisionFlow:
         assert await bot.evaluate_symbol("ETHUSDT") is None
 
 
+class TestDatiVecchiNelRunner:
+    @pytest.mark.asyncio
+    async def test_un_trade_fresco_non_riabilita_candele_vecchie(
+        self, bot: TradingBot
+    ) -> None:
+        """Lo scenario dell'audit: arrivano trade, quindi il controllo
+        generale sul feed e' soddisfatto, ma le candele sono ferme da dieci
+        minuti. Il vettore resta "completo" e il bot aprirebbe su un prezzo
+        di dieci minuti fa."""
+        feed_candles(bot, 300)
+        bot.clock.advance_by(600_000)  # type: ignore[attr-defined]
+        # un trade appena arrivato: il kill switch vede il feed vivo
+        bot.on_trade(Trade("BTCUSDT", 1, D("69000"), D("0.5"), bot.clock.now_ms(), False))
+
+        order = await bot.evaluate_symbol("BTCUSDT")
+        assert order is None
+        assert any(
+            "dati vecchi" in motivo
+            for motivo in bot.risk.decisions[-1].rejection_reasons
+        ), bot.risk.decisions[-1].rejection_reasons
+
+
 class TestOrdineInviabile:
     """Un ordine piu' piccolo del minimo della coppia non verra' mai eseguito.
     Il bot deve dirlo all'avvio, non lasciare l'utente davanti a un pannello

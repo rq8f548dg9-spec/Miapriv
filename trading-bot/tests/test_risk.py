@@ -101,6 +101,7 @@ def context(filters: SymbolFilters, **overrides: object) -> MarketContext:
         payoff_ratio=1.5,
         expected_move_bps=50.0,
         estimated_cost_bps=11.0,
+        data_age_ms=0.0,
     )
     kwargs.update(overrides)
     return MarketContext(**kwargs)  # type: ignore[arg-type]
@@ -694,6 +695,48 @@ class TestKillSwitch:
 # ---------------------------------------------------------------------------
 # Orchestrazione
 # ---------------------------------------------------------------------------
+
+
+class TestDatiVecchi:
+    """Un vettore completo puo' essere vecchio di un giorno: il conteggio
+    delle barre non dice niente sul quando."""
+
+    def test_non_si_apre_su_dati_vecchi(
+        self, manager: RiskManager, filters: SymbolFilters
+    ) -> None:
+        soglia = manager.config.risk.killswitch.max_data_staleness_ms
+        decision = manager.evaluate(
+            long_signal(),
+            snapshot_of(Portfolio(D("200"))),
+            context(filters, data_age_ms=float(soglia) + 1),
+        )
+        assert not decision.approved
+        assert any("vecchi" in motivo for motivo in decision.rejection_reasons)
+
+    def test_si_chiude_anche_su_dati_vecchi(
+        self, manager: RiskManager, filters: SymbolFilters
+    ) -> None:
+        """Chiudere e' sempre permesso: restare dentro per mancanza di dati
+        freschi e' il contrario della prudenza."""
+        portfolio = Portfolio(D("200"))
+        portfolio.apply_fill(buy_fill("0.001"))
+        decision = manager.evaluate(
+            Signal(
+                symbol="BTCUSDT", ts_ms=NOW, direction=SignalDirection.SHORT,
+                probability=0.80, features={}, generator="rules", horizon_ms=300_000,
+            ),
+            snapshot_of(portfolio),
+            context(filters, data_age_ms=86_400_000.0),
+        )
+        assert decision.approved, decision.rejection_reasons
+
+    def test_dati_freschi_non_sono_un_ostacolo(
+        self, manager: RiskManager, filters: SymbolFilters
+    ) -> None:
+        decision = manager.evaluate(
+            long_signal(), snapshot_of(Portfolio(D("200"))), context(filters, data_age_ms=500.0)
+        )
+        assert decision.approved, decision.rejection_reasons
 
 
 class TestRiskManager:

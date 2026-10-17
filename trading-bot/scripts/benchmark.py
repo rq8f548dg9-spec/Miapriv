@@ -236,6 +236,7 @@ def misura_decisione(config: AppConfig) -> Misura:
                 price=Decimal("60000"),
                 filters=filtri,
                 payoff_ratio=proposta.plan.payoff_ratio,
+                data_age_ms=0.0,
                 expected_move_bps=proposta.plan.expected_move_bps,
                 estimated_cost_bps=22.0,
             ),
