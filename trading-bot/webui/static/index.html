@@ -910,14 +910,16 @@ $('btn-save-keys').onclick = async () => {
   }
   note('msg-keys', 'Salvataggio e verifica in corso…');
   try {
-    await post('/api/credenziali', { api_key, api_secret });
+    const salvataggio = await post('/api/credenziali', { api_key, api_secret });
     const check = await post('/api/test-connessione');
     const balances = Object.entries(check.saldi || {})
       .map(([asset, amount]) => `${asset} ${fmt(amount, 2)}`).join(', ') || 'nessun saldo';
     const others = check.altri_asset
       ? ` (più altri ${check.altri_asset} asset di prova, che il bot non usa)` : '';
+    const avviso = salvataggio.avviso ? ` ⚠ ${salvataggio.avviso}` : '';
     note('msg-keys',
-         `Connessione riuscita. Saldi utili: ${balances}${others}.`, 'ok');
+         `Connessione riuscita. Saldi utili: ${balances}${others}.${avviso}`,
+         salvataggio.avviso ? 'warn' : 'ok');
     $('api-key').value = ''; $('api-secret').value = '';
     await refresh();
   } catch (error) {

@@ -13,7 +13,7 @@ microbenchmark di funzioni isolate.
 from __future__ import annotations
 
 import random
-import resource
+import sys
 import time
 from dataclasses import dataclass
 from decimal import Decimal
@@ -60,6 +60,25 @@ class Misura:
             f"  {self.nome:<42} {self.al_secondo:>12,.0f} {self.unita}/s"
             f"   ({self.microsecondi_per_operazione:>7.1f} us ciascuna)"
         )
+
+
+if sys.platform == "win32":
+
+    def picco_memoria_mb() -> float | None:
+        """Windows non espone ``getrusage``: il picco non si misura.
+
+        Dire "non misurabile" e' l'unica risposta onesta. Importare
+        ``resource`` a prescindere fermava il programma all'avvio, prima
+        ancora di stampare l'aiuto.
+        """
+        return None
+
+else:
+    import resource
+
+    def picco_memoria_mb() -> float | None:
+        """Picco di memoria del processo, in MB."""
+        return float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024
 
 
 def candele(count: int, symbol: str = "BTCUSDT", seed: int = 7) -> list[Candle]:
@@ -256,8 +275,11 @@ def main() -> int:
     for misura in misure:
         print(misura.riga())
 
-    memoria_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-    print(f"\n  MEMORIA  picco del processo: {memoria_mb:,.0f} MB")
+    memoria_mb = picco_memoria_mb()
+    if memoria_mb is None:
+        print("\n  MEMORIA  picco non misurabile su questo sistema")
+    else:
+        print(f"\n  MEMORIA  picco del processo: {memoria_mb:,.0f} MB")
 
     decisioni = next(m for m in misure if m.nome.startswith("Ciclo completo"))
     backtest = next(m for m in misure if m.nome.startswith("Backtest"))

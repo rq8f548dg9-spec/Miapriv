@@ -228,6 +228,15 @@ class RiskConfig(_Base):
     killswitch: KillSwitchConfig
 
 
+#: Intervalli di candela ammessi, con la loro durata in millisecondi.
+#: E' la sola definizione: la configurazione li valida e lo scaricatore dello
+#: storico li usa per avanzare nel tempo.
+INTERVAL_MS: dict[str, int] = {
+    "1s": 1_000, "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000,
+    "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
+}
+
+
 class DataConfig(_Base):
     """Ingest, buffer e persistenza."""
 
@@ -250,9 +259,11 @@ class DataConfig(_Base):
     @field_validator("candle_interval")
     @classmethod
     def _known_interval(cls, value: str) -> str:
-        allowed = {"1s", "1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}
-        if value not in allowed:
-            raise ValueError(f"candle_interval {value!r} non fra {sorted(allowed)}")
+        # L'elenco e' uno solo, condiviso con lo scaricatore dello storico:
+        # due elenchi separati divergono, e l'utente lo scopre con un errore
+        # a meta' del download.
+        if value not in INTERVAL_MS:
+            raise ValueError(f"candle_interval {value!r} non fra {sorted(INTERVAL_MS)}")
         return value
 
 

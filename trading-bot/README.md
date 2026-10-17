@@ -47,8 +47,11 @@ per il passaggio a denaro reale.
 - **non può passare a denaro reale**: quel passaggio resta una modifica al
   file di configurazione più una variabile d'ambiente. Un bottone sarebbe
   troppo facile da premere;
-- **non mostra mai le chiavi**: le riceve, le scrive in `.env` con permessi
-  `600`, e da quel momento risponde soltanto «configurate: sì».
+- **non mostra mai le chiavi**: le riceve, le scrive in `.env` riservandone la
+  lettura al tuo utente (`chmod 600` su Linux e Mac, `icacls` sulle ACL NTFS su
+  Windows), e da quel momento risponde soltanto «configurate: sì». Se la
+  restrizione non riesce il pannello lo dice invece di tacere: su un computer
+  condiviso e' un'informazione che cambia le tue scelte.
 
 ### Se il doppio clic non funziona
 

@@ -22,7 +22,9 @@ import copy
 import json
 import logging
 import os
+import platform
 import re
+import subprocess
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -349,10 +351,76 @@ async def _read_json(request: web.Request) -> dict[str, Any]:
 _CHIAVE_VALIDA = re.compile(r"[A-Za-z0-9_-]{16,128}")
 
 
-def write_credentials(env_path: Path, api_key: str, api_secret: str) -> None:
+#: Forma ammessa per un nome utente Windows da passare a icacls.
+_NOME_UTENTE_VALIDO = re.compile(r"[^\\/:*?\"<>|\n\r\t]{1,104}")
+
+
+def _esegui_comando(comando: list[str]) -> bool:
+    """Esegue un comando di sistema. Vero se e' andato a buon fine.
+
+    Vive in una funzione sua perche' i test possano sostituirla: lanciare
+    davvero ``icacls`` fuori da Windows non direbbe nulla.
+    """
+    try:
+        # Nessuna shell: gli argomenti sono una lista, costruita qui dentro.
+        esito = subprocess.run(  # noqa: S603
+            comando, capture_output=True, timeout=20, check=False
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("comando %s non eseguito: %s", comando[0], exc)
+        return False
+    if esito.returncode != 0:
+        logger.warning(
+            "comando %s fallito (codice %d): %s",
+            comando[0],
+            esito.returncode,
+            esito.stderr.decode(errors="replace").strip(),
+        )
+        return False
+    return True
+
+
+def restringi_accesso(path: Path) -> str:
+    """Riserva il file al solo utente corrente. Dice cosa ha ottenuto davvero.
+
+    Su Unix basta ``chmod 600``. Su Windows non basta: i permessi POSIX non
+    esistono, ``chmod`` tocca soltanto il bit di sola lettura e il file resta
+    leggibile dagli altri utenti del computer. L'unico strumento che agisce
+    sulle ACL NTFS e' ``icacls``: si prova quello, e se non riesce si dichiara
+    "nessuna" invece di far credere a una protezione che non c'e'.
+    """
+    if platform.system() != "Windows":
+        path.chmod(0o600)
+        return "posix-600"
+
+    utente = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    if not _NOME_UTENTE_VALIDO.fullmatch(utente):
+        # Un nome che non somiglia a un nome utente non finisce nella riga di
+        # comando: diventerebbe un'opzione di icacls invece di un utente.
+        logger.warning(
+            "utente Windows non riconosciuto (%r): ACL del file chiavi non ristrette",
+            utente,
+        )
+        return "nessuna"
+    applicato = _esegui_comando(
+        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{utente}:F"]
+    )
+    if not applicato:
+        logger.warning(
+            "ACL di %s non ristrette: il file e' leggibile dagli altri utenti "
+            "di questo computer",
+            path,
+        )
+        return "nessuna"
+    return "windows-acl"
+
+
+def write_credentials(env_path: Path, api_key: str, api_secret: str) -> str:
     """Scrive le chiavi testnet in ``.env``, preservando le altre righe.
 
     Non tocca mai le variabili live: il pannello non deve poterle impostare.
+    Restituisce come e' stato protetto il file, per poterlo dire all'utente
+    invece di dichiarare una garanzia non verificata.
     """
     if not api_key or not api_secret:
         raise UiError("chiave e segreto sono entrambi obbligatori")
@@ -380,11 +448,12 @@ def write_credentials(env_path: Path, api_key: str, api_secret: str) -> None:
     lines.append(f"{TESTNET_KEY_VAR}={api_key}")
     lines.append(f"{TESTNET_SECRET_VAR}={api_secret}")
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    env_path.chmod(0o600)  # le chiavi non sono leggibili dagli altri utenti
+    protezione = restringi_accesso(env_path)
 
     # Valgono subito, senza riavviare il pannello.
     os.environ[TESTNET_KEY_VAR] = api_key
     os.environ[TESTNET_SECRET_VAR] = api_secret
+    return protezione
 
 
 #: Campi modificabili dal pannello, con il percorso nello YAML.
@@ -625,14 +694,27 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
     async def set_credentials(request: web.Request) -> web.Response:
         try:
             payload = await _read_json(request)
-            write_credentials(
+            protezione = write_credentials(
                 env_path,
                 str(payload.get("api_key", "")).strip(),
                 str(payload.get("api_secret", "")).strip(),
             )
         except UiError as exc:
             return _error(str(exc))
-        return _json({"ok": True, "credenziali_presenti": supervisor.credentials_present()})
+        risposta: dict[str, Any] = {
+            "ok": True,
+            "credenziali_presenti": supervisor.credentials_present(),
+            "protezione_file": protezione,
+        }
+        if protezione == "nessuna":
+            # Dirlo e' l'unica cosa onesta: il bot non puo' restringere il
+            # file da solo, ma chi usa il computer puo' deciderlo sapendolo.
+            risposta["avviso"] = (
+                f"Le chiavi sono salvate in {env_path.name} ma non e' stato possibile "
+                "riservarne la lettura al tuo utente. Su un computer condiviso, "
+                "proteggi tu la cartella o usa chiavi di sola prova."
+            )
+        return _json(risposta)
 
     async def test_connection(request: web.Request) -> web.Response:
         """Verifica che le chiavi funzionino davvero, prima di avviare."""

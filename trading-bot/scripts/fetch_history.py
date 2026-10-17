@@ -20,7 +20,7 @@ from pathlib import Path
 from pydantic import SecretStr
 
 from config.credentials import Credentials, load_dotenv
-from config.schema import Mode, load_config
+from config.schema import INTERVAL_MS, Mode, load_config
 from core.clock import LiveClock
 from core.types import Candle, datetime_to_ms
 from data.store import ParquetStore
@@ -29,11 +29,20 @@ from monitoring.logger import setup_logging
 
 logger = logging.getLogger("trading_bot.fetch")
 
-#: Durata in millisecondi degli intervalli supportati.
-INTERVAL_MS = {
-    "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000,
-    "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
-}
+
+
+def step_ms_for(interval: str) -> int:
+    """Durata di una candela dell'intervallo richiesto, in millisecondi.
+
+    La tabella e' quella che la configurazione usa per validare: cosi' un
+    intervallo ammesso e' per costruzione un intervallo scaricabile.
+    """
+    durata = INTERVAL_MS.get(interval)
+    if durata is None:
+        raise ValueError(
+            f"intervallo {interval!r} non scaricabile: ammessi {sorted(INTERVAL_MS)}"
+        )
+    return durata
 
 
 def to_candle(symbol: str, row: list[object]) -> Candle:
@@ -56,7 +65,7 @@ def to_candle(symbol: str, row: list[object]) -> Candle:
 async def fetch(symbols: list[str], days: int, config_path: Path) -> int:
     config = load_config(config_path)
     interval = config.data.candle_interval
-    step_ms = INTERVAL_MS[interval]
+    step_ms = step_ms_for(interval)
 
     clock = LiveClock()
     # L'endpoint klines e' pubblico: le credenziali servono solo alla firma,

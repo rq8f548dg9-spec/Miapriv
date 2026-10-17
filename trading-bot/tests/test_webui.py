@@ -81,8 +81,54 @@ class TestSicurezza:
 
     def test_il_file_env_non_e_leggibile_dagli_altri(self, tmp_path: Path) -> None:
         env = tmp_path / ".env"
-        write_credentials(env, "k" * 32, "s" * 32)
+        assert write_credentials(env, "k" * 32, "s" * 32) == "posix-600"
         assert oct(env.stat().st_mode)[-3:] == "600"
+
+    def test_su_windows_restringe_le_acl_invece_del_chmod(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Su Windows ``chmod(600)`` non tocca le ACL NTFS: il file resta
+        leggibile e la garanzia dichiarata sarebbe falsa."""
+        import platform as modulo_platform
+
+        import webui.server as server
+
+        comandi: list[list[str]] = []
+
+        def esegui(comando: list[str]) -> bool:
+            comandi.append(comando)
+            return True
+
+        monkeypatch.setattr(modulo_platform, "system", lambda: "Windows")
+        monkeypatch.setattr(server, "_esegui_comando", esegui)
+        monkeypatch.setenv("USERNAME", "giorgio")
+
+        env = tmp_path / ".env"
+        assert write_credentials(env, "k" * 32, "s" * 32) == "windows-acl"
+        assert len(comandi) == 1
+        comando = comandi[0]
+        assert comando[0] == "icacls"
+        assert str(env) in comando
+        assert "/inheritance:r" in comando
+        assert any(part.startswith("giorgio:") for part in comando)
+
+    def test_se_le_acl_non_si_applicano_non_lo_dichiara(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Meglio dire che il file non e' protetto che dichiarare una
+        protezione che non c'e': l'utente puo' spostarlo o cifrarlo."""
+        import platform as modulo_platform
+
+        import webui.server as server
+
+        monkeypatch.setattr(modulo_platform, "system", lambda: "Windows")
+        monkeypatch.setattr(server, "_esegui_comando", lambda comando: False)
+        monkeypatch.setenv("USERNAME", "giorgio")
+
+        env = tmp_path / ".env"
+        assert write_credentials(env, "k" * 32, "s" * 32) == "nessuna"
+        # le chiavi sono comunque state scritte: servono per operare
+        assert "k" * 32 in env.read_text(encoding="utf-8")
 
     def test_chiavi_vuote_rifiutate(self, tmp_path: Path) -> None:
         with pytest.raises(UiError, match="obbligatori"):
