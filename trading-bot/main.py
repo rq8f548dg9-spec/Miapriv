@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from backtest.engine import BacktestEngine
+from backtest.metrics import assess
 from config.credentials import load_dotenv
 from config.schema import AppConfig, Mode, load_config
 from core.types import datetime_to_ms
@@ -93,13 +94,25 @@ def run_backtest(config: AppConfig) -> int:
     logger.info("backtest concluso: %s", result.summary())
     print(result.summary())
 
-    if not result.metrics.is_viable:
+    # Tre esiti, tre codici di uscita: "insufficiente" non e' una
+    # bocciatura, e' l'assenza di dati per esprimersi. Collassarlo su
+    # "negativo" fa scartare una strategia che non e' mai stata misurata.
+    giudizio = assess(result.metrics)
+    if giudizio.outcome == "insufficiente":
         print(
-            "\nLa strategia NON regge i costi di transazione su questi dati.\n"
+            f"\nEVIDENZA ECONOMICA: INSUFFICIENTE.\n{giudizio.explanation}\n"
+            "Non e' una bocciatura: serve un campione piu' lungo prima di\n"
+            "poter dire se la strategia regge i costi."
+        )
+        return 3
+    if giudizio.outcome == "negativo":
+        print(
+            f"\nEVIDENZA ECONOMICA: NEGATIVA.\n{giudizio.explanation}\n"
             "Non ha senso passare al modello predittivo finche' la baseline\n"
             "a regole non supera questa soglia."
         )
         return 1
+    print(f"\nEVIDENZA ECONOMICA: POSITIVA su questo campione.\n{giudizio.explanation}")
     return 0
 
 

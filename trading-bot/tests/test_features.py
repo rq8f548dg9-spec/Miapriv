@@ -399,3 +399,38 @@ class TestFeatureEngine:
             engine.on_trade(Trade("BTCUSDT", i, price, D("1"), NOW + i * MINUTE, i % 2 == 0))
         vector = engine.compute("BTCUSDT", NOW + 20 * MINUTE)
         assert all(math.isfinite(value) for value in vector.values.values())
+
+
+class TestCapienzaDelFlussoOrdini:
+    """``data.buffer_capacity`` era dichiarato e mai letto: il buffer dei
+    trade cresceva solo in base al tempo. In una raffica (listing, notizia,
+    liquidazioni a catena) quel "solo in base al tempo" sono centinaia di
+    migliaia di trade in trenta secondi, per simbolo.
+
+    Il tetto da solo non basta pero': buttare via i trade piu' vecchi e
+    continuare a pubblicare l'OFI su una finestra che non si ha piu'
+    intera significa pubblicare un numero sbagliato. Meglio dichiarare che
+    quella finestra non si sa."""
+
+    def test_il_buffer_non_cresce_oltre_la_capienza(self) -> None:
+        flow = OrderFlowImbalance((1_000, 30_000), capacity=10)
+        for i in range(100):
+            flow.update(
+                Trade("BTCUSDT", i, D("100"), D("1"), NOW + i, i % 2 == 0)
+            )
+        assert flow.size <= 10
+
+    def test_una_finestra_non_piu_coperta_vale_none(self) -> None:
+        flow = OrderFlowImbalance((1_000, 30_000), capacity=10)
+        for i in range(100):
+            flow.update(
+                Trade("BTCUSDT", i, D("100"), D("1"), NOW + i, i % 2 == 0)
+            )
+        now = NOW + 99
+        # I dieci trade rimasti coprono NOW+90..NOW+99: una finestra che
+        # sta dentro quell'intervallo e' ancora intera, una che comincia
+        # prima no.
+        assert flow.value(5, now) is not None, "la finestra corta e' ancora intera"
+        assert flow.value(30_000, now) is None, (
+            "la finestra lunga non e' piu' coperta: dichiararla, non stimarla"
+        )

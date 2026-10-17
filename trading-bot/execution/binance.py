@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -46,6 +47,7 @@ __all__ = [
     "BinanceBroker",
     "HttpClient",
     "HttpResponse",
+    "OrderCountLimiter",
     "RateLimiter",
     "TransportTimeoutError",
     "parse_symbol_filters",
@@ -162,6 +164,51 @@ class RateLimiter:
         self._tokens = min(self.capacity, self._tokens + elapsed_s * self.refill_per_second)
 
 
+@dataclass
+class OrderCountLimiter:
+    """Conta gli ordini inviati, non il loro peso.
+
+    Binance ha due contatori distinti da quello del peso: uno sui 10
+    secondi e uno sulle 24 ore. Sforarli non costa un rifiuto dell'ordine,
+    costa un blocco temporaneo dell'account, e un account bloccato non
+    puo' nemmeno chiudere le posizioni che ha aperte.
+
+    La finestra breve si smaltisce aspettando, quindi si aspetta. Quella
+    giornaliera no: si dichiara e si smette, cosi' il bot si ferma da solo
+    prima che lo fermi l'exchange.
+    """
+
+    capacita_10s: int
+    capacita_giornaliera: int
+    clock: Clock
+    _recenti: deque[TimestampMs] = field(default_factory=deque, repr=False)
+    _del_giorno: deque[TimestampMs] = field(default_factory=deque, repr=False)
+    attese: int = 0
+
+    async def acquire(self) -> None:
+        while True:
+            now_ms = self.clock.now_ms()
+            self._pota(now_ms)
+            if len(self._del_giorno) >= self.capacita_giornaliera:
+                raise BrokerError(
+                    f"limite giornaliero di ordini raggiunto "
+                    f"({self.capacita_giornaliera} in 24 ore): invio sospeso"
+                )
+            if len(self._recenti) < self.capacita_10s:
+                self._recenti.append(now_ms)
+                self._del_giorno.append(now_ms)
+                return
+            attesa_ms = 10_000 - (now_ms - self._recenti[0]) + 1
+            self.attese += 1
+            await self.clock.sleep(max(attesa_ms, 1) / 1000.0)
+
+    def _pota(self, now_ms: TimestampMs) -> None:
+        while self._recenti and now_ms - self._recenti[0] >= 10_000:
+            self._recenti.popleft()
+        while self._del_giorno and now_ms - self._del_giorno[0] >= 86_400_000:
+            self._del_giorno.popleft()
+
+
 def _decimale_positivo(valore: Any) -> Decimal | None:
     """Converte un campo di exchangeInfo, ignorando gli zeri.
 
@@ -225,12 +272,18 @@ class BinanceBroker(Broker):
     clock: Clock
     http: HttpClient
     limiter: RateLimiter | None = None
+    order_limiter: OrderCountLimiter = field(init=False, repr=False)
     _filters_cache: dict[str, SymbolFilters] = field(default_factory=dict, repr=False)
     _filters_fetched_ms: TimestampMs = 0
     requests_sent: int = 0
     retries: int = 0
 
     def __post_init__(self) -> None:
+        self.order_limiter = OrderCountLimiter(
+            capacita_10s=self.config.exchange.max_orders_per_10s,
+            capacita_giornaliera=self.config.exchange.max_orders_per_day,
+            clock=self.clock,
+        )
         if self.limiter is None:
             weight = float(self.config.exchange.max_request_weight_per_minute)
             self.limiter = RateLimiter(
@@ -438,6 +491,9 @@ class BinanceBroker(Broker):
             params["price"] = format(order.price.normalize(), "f")
             params["timeInForce"] = (order.time_in_force or TimeInForce.GTC).value
 
+        # Prima del peso: un ordine che sfora il contatore degli ordini
+        # non deve nemmeno consumare il bucket del peso.
+        await self.order_limiter.acquire()
         started_ns = self.clock.monotonic_ns()
         try:
             payload = await self._request(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -954,3 +955,129 @@ class TestFillRecuperati:
 
         await bot.periodic_reconcile()
         assert bot.portfolio.positions["BTCUSDT"].quantity == D("0.002")
+
+
+class TestParametriDiManutenzione:
+    """Due parametri di ``data`` erano dichiarati e mai letti: il bot li
+    mostrava in configurazione senza che cambiare il valore cambiasse
+    qualcosa. Un libro ordini va riallineato ogni tanto anche quando la
+    sequenza non si rompe (livelli oltre la profondita' sottoscritta
+    restano fermi per ore), e lo storico su disco va potato o cresce
+    finche' il disco finisce."""
+
+    @pytest.mark.asyncio
+    async def test_il_book_si_riallinea_anche_senza_buchi(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        bot = make_bot(config, tmp_path)
+        clock = cast(SimulatedClock, bot.clock)
+        book = bot.books["BTCUSDT"]
+        book.apply_snapshot(
+            last_update_id=1,
+            bids=((D("59990"), D("1")),),
+            asks=((D("60010"), D("1")),),
+            ts_ms=clock.now_ms(),
+        )
+        bot._last_resync_ms["BTCUSDT"] = clock.now_ms()
+        assert book.is_synced
+
+        await bot.resync_books()
+        assert bot.books["BTCUSDT"].last_update_id == 1, "troppo presto per rifarlo"
+
+        clock.advance_by(config.data.orderbook_resync_s * 1000 + 1)
+        await bot.resync_books()
+        assert bot.books["BTCUSDT"].is_synced
+        assert bot._last_resync_ms["BTCUSDT"] == clock.now_ms()
+
+    @pytest.mark.asyncio
+    async def test_lo_storico_oltre_la_ritenzione_viene_potato(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        bot = make_bot(config, tmp_path)
+        clock = cast(SimulatedClock, bot.clock)
+        potati: list[int] = []
+
+        class StoreFinto:
+            def purge_older_than(self, cutoff_ms: int) -> int:
+                potati.append(cutoff_ms)
+                return 0
+
+            def flush(self) -> int:
+                return 0
+
+        bot.store = cast(Any, StoreFinto())
+
+        bot.running = True
+        await bot._supervise(max_iterations=1)
+        assert potati == [], "alla prima passata non c'e' ancora niente di vecchio"
+
+        clock.advance_by(86_400_000 + 1)
+        bot.running = True
+        await bot._supervise(max_iterations=1)
+        atteso = clock.now_ms() - config.data.retention_days * 86_400_000
+        assert potati == [atteso]
+
+
+class TestRaffreddamentoDeiSegnali:
+    """``signals.cooldown_s`` era dichiarato e mai letto. Senza, un segnale
+    che oscilla intorno alla soglia fa entrare e uscire il bot a ogni giro
+    del ciclo: ogni rientro paga commissioni e spread, e il conto si
+    consuma senza che il mercato si sia mosso."""
+
+    @pytest.mark.asyncio
+    async def test_dopo_un_segnale_il_simbolo_resta_fermo_per_il_cooldown(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        bot = make_bot(config, tmp_path)
+        clock = cast(SimulatedClock, bot.clock)
+        feed_candles(bot, config.features.warmup_bars + 1)
+
+        primo = await bot.evaluate_symbol("BTCUSDT")
+        assert primo is not None, "il generatore di prova approva sempre"
+        decisioni = len(bot.risk.decisions)
+
+        clock.advance_by(config.signals.cooldown_s * 1000 - 1_000)
+        assert await bot.evaluate_symbol("BTCUSDT") is None
+        assert len(bot.risk.decisions) == decisioni, (
+            "dentro il raffreddamento il simbolo non si rivaluta nemmeno"
+        )
+
+        # Scaduto il raffreddamento si torna a valutare. Se la valutazione
+        # finisca in un ordine dipende dal rischio, non dal raffreddamento:
+        # quello che conta qui e' che la decisione venga ripresa in mano.
+        clock.advance_by(2_000)
+        await bot.evaluate_symbol("BTCUSDT")
+        assert len(bot.risk.decisions) > decisioni
+
+    @pytest.mark.asyncio
+    async def test_il_raffreddamento_e_per_simbolo(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        bot = make_bot(config, tmp_path)
+        barre = config.features.warmup_bars + 1
+        # Le due serie vanno riempite insieme: ``feed_candles`` porta
+        # l'orologio a un istante assoluto, e rifarlo da capo lo
+        # riporterebbe indietro.
+        feed_candles(bot, barre, symbol="BTCUSDT")
+        prezzo = D("3000")
+        for i in range(barre):
+            # Anche questa serie deve muoversi: a prezzo fermo non c'e' ATR,
+            # e senza ATR non nasce nessun piano da raffreddare.
+            prezzo = (prezzo * D("1.0005")).quantize(D("0.01"))
+            bot.on_candle(
+                Candle(
+                    symbol="ETHUSDT",
+                    open_time_ms=NOW + i * MINUTE,
+                    close_time_ms=NOW + (i + 1) * MINUTE - 1,
+                    open=prezzo, high=prezzo * D("1.001"), low=prezzo * D("0.999"),
+                    close=prezzo, volume=D("10"), quote_volume=prezzo * D("10"),
+                    trades=25, is_closed=True,
+                )
+            )
+        bot.last_prices["ETHUSDT"] = prezzo
+        bot.broker.set_price("ETHUSDT", prezzo)  # type: ignore[attr-defined]
+
+        assert await bot.evaluate_symbol("BTCUSDT") is not None
+        assert await bot.evaluate_symbol("ETHUSDT") is not None, (
+            "il raffreddamento di un simbolo non deve bloccarne un altro"
+        )

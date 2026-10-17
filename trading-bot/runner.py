@@ -56,6 +56,8 @@ __all__ = ["TradingBot", "build_bot"]
 
 logger = logging.getLogger("trading_bot.runner")
 
+_UN_GIORNO_MS = 86_400_000
+
 
 def build_generator(config: AppConfig) -> SignalGenerator:
     """Sceglie il generatore. Il modello ML resta un segnaposto che rifiuta."""
@@ -118,6 +120,17 @@ class TradingBot:
     filters: dict[str, SymbolFilters] = field(default_factory=dict)
     last_prices: dict[str, Decimal] = field(default_factory=dict)
     needs_resync: set[str] = field(default_factory=set)
+    #: Istante dell'ultimo snapshot REST applicato, per simbolo. Il book
+    #: differenziale va riallineato anche senza buchi di sequenza: i
+    #: livelli oltre la profondita' sottoscritta non ricevono
+    #: aggiornamenti e restano fermi.
+    _last_resync_ms: dict[str, TimestampMs] = field(default_factory=dict, repr=False)
+    #: Istante dell'ultima potatura dello storico. Vive sull'istanza e
+    #: non nel ciclo di supervisione: ripartire il conteggio a ogni
+    #: ingresso nel ciclo vuol dire non potare mai.
+    _last_purge_ms: TimestampMs = field(default=0, repr=False)
+    #: Istante dell'ultimo segnale prodotto, per simbolo.
+    _last_signal_ms: dict[str, TimestampMs] = field(default_factory=dict, repr=False)
     last_order_latency_ms: float | None = None
     running: bool = False
     #: Stop e target delle posizioni aperte, per simbolo.
@@ -127,7 +140,10 @@ class TradingBot:
     _day_key: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
-        self.features = FeatureEngine(self.config.features)
+        self.features = FeatureEngine(
+            self.config.features, trade_capacity=self.config.data.buffer_capacity
+        )
+        self._last_purge_ms = self.clock.now_ms()
         if self.lease is None:
             # Accanto allo stato: due processi che condividono lo stato sono
             # esattamente i due che non devono inviare ordini insieme.
@@ -399,6 +415,15 @@ class TradingBot:
     async def evaluate_symbol(self, symbol: str) -> Order | None:
         """Valuta un simbolo e, se approvato, invia l'ordine."""
         now_ms = self.clock.now_ms()
+        # Raffreddamento: dopo un segnale il simbolo resta fermo per
+        # ``cooldown_s``. Un punteggio che oscilla intorno alla soglia
+        # altrimenti fa entrare e uscire a ogni giro del ciclo, e ogni
+        # rientro paga commissioni e spread senza che il mercato si muova.
+        ultimo_segnale = self._last_signal_ms.get(symbol)
+        raffreddamento_ms = self.config.signals.cooldown_s * 1000
+        if ultimo_segnale is not None and now_ms - ultimo_segnale < raffreddamento_ms:
+            return None
+
         vector = self.features.compute(symbol, now_ms)
         position = self.portfolio.positions.get(symbol)
         has_position = position is not None and not position.is_flat
@@ -408,6 +433,7 @@ class TradingBot:
         )
         if proposal is None:
             return None
+        self._last_signal_ms[symbol] = now_ms
 
         price = self.last_prices.get(symbol)
 
@@ -617,7 +643,8 @@ class TradingBot:
     # -- compiti periodici -------------------------------------------------
 
     async def resync_books(self) -> None:
-        """Riallinea i book che hanno perso la sequenza."""
+        """Riallinea i book: quelli rotti, e quelli semplicemente vecchi."""
+        self._segna_i_book_scaduti()
         for symbol in list(self.needs_resync):
             snapshot = await self.broker.depth_snapshot(
                 symbol, limit=self.config.data.orderbook_depth
@@ -634,7 +661,17 @@ class TradingBot:
             )
             self.features.on_book(symbol, book.snapshot())
             self.needs_resync.discard(symbol)
+            self._last_resync_ms[symbol] = self.clock.now_ms()
             logger.info("book di %s riallineato", symbol)
+
+    def _segna_i_book_scaduti(self) -> None:
+        """Mette in coda i book il cui ultimo snapshot e' troppo vecchio."""
+        scadenza_ms = self.config.data.orderbook_resync_s * 1000
+        now_ms = self.clock.now_ms()
+        for symbol in self.books:
+            ultimo = self._last_resync_ms.get(symbol)
+            if ultimo is None or now_ms - ultimo >= scadenza_ms:
+                self.needs_resync.add(symbol)
 
     async def check_killswitch(self) -> None:
         """Valuta le condizioni di arresto e, se serve, chiude tutto."""
@@ -848,6 +885,13 @@ class TradingBot:
                 await self._safely("riconciliazione", self.periodic_reconcile())
                 last_reconcile_ms = now_ms
 
+            # Una volta al giorno si pota lo storico su disco: senza, un bot
+            # che gira per mesi riempie il disco e si ferma per un motivo
+            # che non ha niente a che vedere con il trading.
+            if now_ms - self._last_purge_ms >= _UN_GIORNO_MS:
+                self._pota_lo_storico(now_ms)
+                self._last_purge_ms = now_ms
+
             self.snapshot_state()
 
             uscita = max_iterations is not None and iterations >= max_iterations
@@ -868,6 +912,15 @@ class TradingBot:
             self.alerts.critical_error(nome, exc)
             return False
         return True
+
+    def _pota_lo_storico(self, now_ms: TimestampMs) -> None:
+        """Elimina le partizioni Parquet oltre la finestra di ritenzione."""
+        if self.store is None:
+            return
+        cutoff = now_ms - self.config.data.retention_days * _UN_GIORNO_MS
+        rimossi = self.store.purge_older_than(cutoff)
+        if rimossi:
+            logger.info("storico potato: %d partizioni oltre la ritenzione", rimossi)
 
     async def _refresh_filters(self) -> None:
         """Rilegge i filtri da exchangeInfo. Il broker li tiene in cache."""

@@ -148,7 +148,9 @@ class BacktestEngine:
 
         clock = SimulatedClock(ordered[0].open_time_ms)
         portfolio = Portfolio(initial)
-        features = FeatureEngine(self.config.features)
+        features = FeatureEngine(
+            self.config.features, trade_capacity=self.config.data.buffer_capacity
+        )
         # Ordine in volo e istante dal quale puo' essere eseguito: con una
         # latenza piu' lunga di una barra, l'esecuzione non e' alla barra
         # successiva ma a quella in cui l'ordine sarebbe davvero arrivato.

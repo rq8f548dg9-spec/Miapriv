@@ -49,7 +49,9 @@ class WebSocketConnection(Protocol):
     async def close(self) -> None: ...
 
 
-ConnectionFactory = Callable[[str], Awaitable[WebSocketConnection]]
+#: Riceve URL e intervallo di ping in secondi: il keepalive e' una
+#: proprieta' della connessione, quindi la decide chi la apre.
+ConnectionFactory = Callable[[str, float], Awaitable[WebSocketConnection]]
 
 
 class MarketDataHandler(Protocol):
@@ -130,7 +132,9 @@ def parse_stream_message(payload: str) -> Trade | Candle | DepthUpdate | None:
     return None
 
 
-async def websockets_connection_factory(url: str) -> WebSocketConnection:
+async def websockets_connection_factory(
+    url: str, ping_interval_s: float = 20.0
+) -> WebSocketConnection:
     """Factory di produzione, basata sulla libreria ``websockets``.
 
     Importata qui dentro e non in testa al modulo: il backtest non ha bisogno
@@ -139,7 +143,7 @@ async def websockets_connection_factory(url: str) -> WebSocketConnection:
     import websockets
 
     connection: WebSocketConnection = await websockets.connect(
-        url, ping_interval=20, ping_timeout=20
+        url, ping_interval=ping_interval_s, ping_timeout=ping_interval_s
     )
     return connection
 
@@ -239,7 +243,9 @@ class MarketDataIngestor:
         Restituisce quanti messaggi ha consegnato: zero indica una connessione
         che non ha mai funzionato davvero, e il backoff non va azzerato.
         """
-        connection = await self.connection_factory(self.stream_url())
+        connection = await self.connection_factory(
+            self.stream_url(), float(self.config.data.ws_ping_interval_s)
+        )
         consumed = 0
         try:
             async for raw in connection:

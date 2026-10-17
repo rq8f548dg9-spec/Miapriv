@@ -59,6 +59,8 @@ class SymbolFeatureState:
 
     symbol: str
     config: FeaturesConfig
+    #: Tetto ai trade in memoria; ``None`` = solo il limite temporale.
+    trade_capacity: int | None = None
     volatility: RealizedVolatility = field(init=False)
     atr: AverageTrueRange = field(init=False)
     momentum: MomentumFeatures = field(init=False)
@@ -80,7 +82,9 @@ class SymbolFeatureState:
         self.momentum = MomentumFeatures(
             self.config.returns_windows_bars, self.config.zscore_window_bars
         )
-        self.order_flow = OrderFlowImbalance(self.config.ofi_windows_ms)
+        self.order_flow = OrderFlowImbalance(
+            self.config.ofi_windows_ms, capacity=self.trade_capacity
+        )
 
     def on_candle(self, candle: Candle) -> None:
         """Aggiorna lo stato con una candela CHIUSA.
@@ -207,6 +211,8 @@ class FeatureEngine:
     """Calcolo feature per tutti i simboli, in streaming."""
 
     config: FeaturesConfig
+    #: Tetto ai trade tenuti in memoria per simbolo (``data.buffer_capacity``).
+    trade_capacity: int | None = None
     states: dict[str, SymbolFeatureState] = field(default_factory=dict)
 
     @property
@@ -217,7 +223,7 @@ class FeatureEngine:
     def state_for(self, symbol: str) -> SymbolFeatureState:
         state = self.states.get(symbol)
         if state is None:
-            state = SymbolFeatureState(symbol, self.config)
+            state = SymbolFeatureState(symbol, self.config, trade_capacity=self.trade_capacity)
             self.states[symbol] = state
         return state
 

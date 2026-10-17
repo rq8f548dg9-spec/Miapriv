@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 from collections.abc import Mapping
@@ -661,3 +662,76 @@ class TestTimeoutDelTrasporto:
             assert "SEGRETO" not in str(exc)
         else:  # pragma: no cover - il test sopra garantisce il sollevamento
             raise AssertionError("doveva sollevare")
+
+
+class TestLimiteSulNumeroDiOrdini:
+    """``max_orders_per_10s`` e ``max_orders_per_day`` erano in
+    configurazione e non li leggeva nessuno: il throttle lato client
+    contava solo il peso delle richieste, che e' un limite diverso.
+    Sforare quello sugli ordini non costa un rifiuto, costa un blocco
+    temporaneo dell'account: a quel punto non si puo' piu' nemmeno
+    chiudere una posizione aperta."""
+
+    ACCETTATO: ClassVar[dict[str, object]] = {
+        "symbol": "BTCUSDT", "clientOrderId": "tb-x", "orderId": 1, "side": "BUY",
+        "status": "NEW", "executedQty": "0", "cummulativeQuoteQty": "0",
+        "transactTime": NOW, "fills": [],
+    }
+
+    def _order(self, numero: int) -> Order:
+        return Order(
+            client_order_id=f"tb-{numero}",
+            symbol="BTCUSDT",
+            side=Side.BUY,
+            order_type=OrderType.MARKET,
+            quantity=D("0.001"),
+            created_at_ms=NOW,
+        )
+
+    @pytest.mark.asyncio
+    async def test_la_raffica_viene_distesa_nel_tempo(
+        self, config: AppConfig, credentials: Credentials
+    ) -> None:
+        """Oltre il limite dei 10 secondi si aspetta: l'ordine parte lo
+        stesso, piu' tardi."""
+        limite = config.exchange.max_orders_per_10s
+        http = FakeHttp([HttpResponse(200, self.ACCETTATO)])
+        clock = SimulatedClock(NOW)
+        broker = BinanceBroker(
+            config=config, credentials=credentials, clock=clock, http=http
+        )
+        for i in range(limite):
+            await broker.submit(self._order(i))
+        assert clock.now_ms() == NOW, "dentro il limite non si aspetta"
+
+        # L'orologio simulato non scorre da solo: l'attesa si vede proprio
+        # perche' qui bisogna farlo scorrere a mano.
+        task = asyncio.create_task(broker.submit(self._order(limite)))
+        for _ in range(60):
+            await asyncio.sleep(0)
+            if task.done():
+                break
+            wake = clock.next_wakeup_ms()
+            if wake is not None:
+                clock.advance_to(wake)
+        await asyncio.wait_for(task, timeout=2)
+        assert clock.now_ms() > NOW, "oltre il limite si attende la finestra"
+        assert broker.order_limiter.attese == 1
+
+    @pytest.mark.asyncio
+    async def test_il_tetto_giornaliero_ferma_gli_invii(
+        self, config: AppConfig, credentials: Credentials
+    ) -> None:
+        """Il limite giornaliero non si smaltisce aspettando qualche
+        secondo: si dichiara e si smette, senza bruciare il conto."""
+        http = FakeHttp([HttpResponse(200, self.ACCETTATO)])
+        clock = SimulatedClock(NOW)
+        broker = BinanceBroker(
+            config=config, credentials=credentials, clock=clock, http=http
+        )
+        broker.order_limiter.capacita_giornaliera = 2
+        await broker.submit(self._order(1))
+        await broker.submit(self._order(2))
+        with pytest.raises(BrokerError, match="giornaliero"):
+            await broker.submit(self._order(3))
+        assert [m for m, _, _ in http.requests].count("POST") == 2

@@ -80,7 +80,8 @@ pytest && mypy . && ruff check .      # 476 test
 cp .env.example .env                   # poi incolla le chiavi testnet
 python -m main --check                 # valida la configurazione
 python -m scripts.fetch_history --days 30
-python -m main --backtest              # esce con codice 1 se non regge i costi
+python -m main --backtest              # 0 evidenza positiva, 1 negativa,
+                                      # 3 campione insufficiente per concludere
 python -m main                         # avvia il bot sulla testnet
 python -m main --ui                    # ...oppure apri il pannello
 

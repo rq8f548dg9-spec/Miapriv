@@ -34,15 +34,31 @@ class OrderFlowImbalance:
     """
 
     windows_ms: tuple[int, ...]
+    #: Tetto al numero di trade tenuti in memoria, per simbolo. ``None`` =
+    #: solo il limite temporale. In una raffica il limite temporale da solo
+    #: non e' un limite: trenta secondi di liquidazioni a catena sono
+    #: centinaia di migliaia di trade.
+    capacity: int | None = None
     _trades: deque[tuple[TimestampMs, Decimal, int]] = field(default_factory=deque, repr=False)
+    #: Trade buttati via per capienza, non per eta'.
+    troncati: int = 0
+    #: Istante del trade piu' vecchio ancora conosciuto dopo un troncamento.
+    _coperto_da_ms: TimestampMs | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.windows_ms:
             raise ValueError("serve almeno una finestra")
+        if self.capacity is not None and self.capacity <= 0:
+            raise ValueError(f"capienza {self.capacity} non positiva")
+
+    @property
+    def size(self) -> int:
+        return len(self._trades)
 
     def update(self, trade: Trade) -> None:
         self._trades.append((trade.ts_ms, trade.quantity, trade.aggressor_side.sign))
         self._evict(trade.ts_ms)
+        self._tronca()
 
     def value(self, window_ms: int, now_ms: TimestampMs) -> float | None:
         """OFI sulla finestra che termina in ``now_ms``.
@@ -51,6 +67,11 @@ class OrderFlowImbalance:
         fermo non ha sbilanciamento zero, semplicemente non ha informazione.
         """
         cutoff = now_ms - window_ms
+        if self._coperto_da_ms is not None and cutoff < self._coperto_da_ms:
+            # La finestra comincia prima del primo trade che abbiamo
+            # ancora: un OFI calcolato su mezza finestra e' un numero
+            # sbagliato, non un numero approssimato.
+            return None
         signed = Decimal(0)
         total = Decimal(0)
         for ts_ms, quantity, sign in reversed(self._trades):
@@ -81,6 +102,20 @@ class OrderFlowImbalance:
         horizon = now_ms - max(self.windows_ms)
         while self._trades and self._trades[0][0] <= horizon:
             self._trades.popleft()
+        if self._coperto_da_ms is not None and self._coperto_da_ms <= horizon:
+            # Il troncamento non conta piu': tutto cio' che manca sarebbe
+            # comunque uscito dalla finestra piu' lunga.
+            self._coperto_da_ms = None
+
+    def _tronca(self) -> None:
+        """Applica il tetto di capienza, dichiarando cosa si e' perso."""
+        if self.capacity is None:
+            return
+        while len(self._trades) > self.capacity:
+            self._trades.popleft()
+            self.troncati += 1
+        if self.troncati and self._trades:
+            self._coperto_da_ms = self._trades[0][0]
 
 
 def book_features(

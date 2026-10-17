@@ -338,6 +338,28 @@ class TestIngestor:
         assert "btcusdt@depth@100ms" in names
         assert all("bnbusdt" not in n for n in names)  # simbolo disabilitato
 
+    @pytest.mark.asyncio
+    async def test_il_ping_configurato_arriva_alla_connessione(
+        self, config: AppConfig
+    ) -> None:
+        """``ws_ping_interval_s`` esisteva in configurazione e non arrivava a
+        nessuno: la connessione reale usava 20 secondi scritti nel codice.
+        Un parametro che non fa niente e' peggio di un parametro assente,
+        perche' chi lo cambia crede di aver cambiato qualcosa."""
+        visti: list[float] = []
+
+        async def factory(url: str, ping_interval_s: float) -> FakeConnection:
+            visti.append(ping_interval_s)
+            return FakeConnection([])
+
+        atteso = float(config.data.ws_ping_interval_s)
+        ingestor = MarketDataIngestor(
+            config, SimulatedClock(NOW), RecordingHandler(),
+            connection_factory=factory, max_cycles=1,
+        )
+        await ingestor.run()
+        assert visti == [atteso]
+
     def test_url_usa_lendpoint_testnet(self, config: AppConfig) -> None:
         ingestor = MarketDataIngestor(
             config, SimulatedClock(NOW), RecordingHandler(), max_cycles=0
@@ -354,7 +376,7 @@ class TestIngestor:
                                  "E": NOW, "b": [], "a": []}}),
         ]
 
-        async def factory(url: str) -> FakeConnection:
+        async def factory(url: str, ping_interval_s: float) -> FakeConnection:
             return FakeConnection(messages)
 
         ingestor = MarketDataIngestor(
@@ -374,7 +396,7 @@ class TestIngestor:
                       "q": "0.1", "T": NOW, "m": False}}
         )
 
-        async def factory(url: str) -> FakeConnection:
+        async def factory(url: str, ping_interval_s: float) -> FakeConnection:
             attempts["n"] += 1
             return FakeConnection([message], fail_with=ConnectionResetError("caduta"))
 
@@ -392,7 +414,7 @@ class TestIngestor:
 
     @pytest.mark.asyncio
     async def test_errore_di_connessione_non_propaga(self, config: AppConfig) -> None:
-        async def factory(url: str) -> FakeConnection:
+        async def factory(url: str, ping_interval_s: float) -> FakeConnection:
             raise OSError("endpoint irraggiungibile")
 
         clock = SimulatedClock(NOW)
@@ -408,7 +430,7 @@ class TestIngestor:
         good = json.dumps({"data": {"e": "trade", "s": "BTCUSDT", "t": 1, "p": "60000",
                                     "q": "0.1", "T": NOW, "m": False}})
 
-        async def factory(url: str) -> FakeConnection:
+        async def factory(url: str, ping_interval_s: float) -> FakeConnection:
             return FakeConnection(["{non json", json.dumps({"data": {"e": "trade"}}), good])
 
         ingestor = MarketDataIngestor(
@@ -592,7 +614,7 @@ class TestSimboliOstili:
                       "q": "1", "T": NOW, "m": False}}
         )
 
-        async def factory(url: str) -> FakeConnection:
+        async def factory(url: str, ping_interval_s: float) -> FakeConnection:
             return FakeConnection([messaggio])
 
         ingestor = MarketDataIngestor(
