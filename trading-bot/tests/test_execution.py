@@ -7,6 +7,7 @@ import hmac
 from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -370,3 +371,71 @@ class TestSubmit:
         http = FakeHttp([])
         await make_broker(config, credentials, http).close()
         assert http.closed
+
+
+class TestInvioAmbiguo:
+    """Un 5xx o un timeout non dicono che l'ordine non e' passato: dicono che
+    non si sa. Rimandarlo e' il modo piu' diretto per ritrovarsi con due
+    posizioni; Binance consente di riusare un client id quando il precedente
+    e' gia' eseguito, quindi non protegge da solo."""
+
+    def _order(self) -> Order:
+        return Order(
+            client_order_id="tb-ambiguo",
+            symbol="BTCUSDT",
+            side=Side.BUY,
+            order_type=OrderType.MARKET,
+            quantity=D("0.001"),
+            created_at_ms=NOW,
+        )
+
+    ESEGUITO: ClassVar[dict[str, object]] = {
+        "symbol": "BTCUSDT", "clientOrderId": "tb-ambiguo", "orderId": 7, "side": "BUY",
+        "status": "FILLED", "executedQty": "0.00100000",
+        "cummulativeQuoteQty": "60.00000000", "transactTime": NOW, "fills": [],
+    }
+
+    @pytest.mark.asyncio
+    async def test_dopo_un_5xx_non_reinvia_ma_domanda(
+        self, config: AppConfig, credentials: Credentials
+    ) -> None:
+        http = FakeHttp([
+            HttpResponse(503, {"msg": "service unavailable"}),  # POST ambiguo
+            HttpResponse(200, self.ESEGUITO),                    # GET di verifica
+        ])
+        clock = SimulatedClock(NOW)
+        broker = BinanceBroker(config=config, credentials=credentials, clock=clock, http=http)
+
+        ack = await broker.submit(self._order())
+
+        metodi = [metodo for metodo, _, _ in http.requests]
+        assert metodi.count("POST") == 1, "l'ordine non deve essere reinviato"
+        assert "GET" in metodi, "lo stato va chiesto all'exchange"
+        assert ack.status is OrderStatus.FILLED
+        assert ack.filled_quantity == D("0.001")
+
+    @pytest.mark.asyncio
+    async def test_se_lexchange_non_lo_conosce_lordine_non_e_partito(
+        self, config: AppConfig, credentials: Credentials
+    ) -> None:
+        http = FakeHttp([
+            HttpResponse(500, {"msg": "ko"}),
+            HttpResponse(400, {"code": -2013, "msg": "Order does not exist."}),
+        ])
+        clock = SimulatedClock(NOW)
+        broker = BinanceBroker(config=config, credentials=credentials, clock=clock, http=http)
+
+        with pytest.raises(BrokerError, match=r"esito sconosciuto|non risulta"):
+            await broker.submit(self._order())
+        assert [m for m, _, _ in http.requests].count("POST") == 1
+
+    @pytest.mark.asyncio
+    async def test_un_rifiuto_certo_resta_un_rifiuto(
+        self, config: AppConfig, credentials: Credentials
+    ) -> None:
+        """Un 400 e' una risposta chiara: non serve interrogare nessuno."""
+        http = FakeHttp([HttpResponse(400, {"code": -1013, "msg": "filtro violato"})])
+        broker = make_broker(config, credentials, http)
+        with pytest.raises(BrokerError, match="rifiutata"):
+            await broker.submit(self._order())
+        assert len(http.requests) == 1

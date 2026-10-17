@@ -45,6 +45,16 @@ __all__ = ["BinanceBroker", "HttpClient", "HttpResponse", "RateLimiter", "parse_
 
 logger = logging.getLogger("trading_bot.binance")
 
+
+class AmbiguousRequestError(BrokerError):
+    """La richiesta puo' essere arrivata o no: l'esito non e' noto.
+
+    Si usa per gli invii di ordini falliti con 5xx, 429 o timeout. Un errore
+    del genere non autorizza a rimandare l'ordine: la documentazione Binance
+    dice esplicitamente che un 5xx puo' corrispondere a un'esecuzione
+    riuscita. Prima si chiede all'exchange, poi semmai si rimanda.
+    """
+
 #: Stati Binance -> stati interni.
 _STATUS_MAP = {
     "NEW": OrderStatus.NEW,
@@ -216,6 +226,7 @@ class BinanceBroker(Broker):
         params: dict[str, Any] | None = None,
         signed: bool = False,
         weight: float = 1.0,
+        retryable: bool = True,
     ) -> Any:
         """Esegue una richiesta con throttle, firma e backoff.
 
@@ -253,10 +264,15 @@ class BinanceBroker(Broker):
             if 200 <= response.status < 300:
                 return response.payload
 
-            retryable = response.is_rate_limited or response.is_server_error
+            ambiguo = response.is_rate_limited or response.is_server_error
             last_error = f"HTTP {response.status}: {response.payload}"
-            if not retryable:
+            if not ambiguo:
                 raise BrokerError(f"{method} {path} rifiutata dall'exchange - {last_error}")
+            if not retryable:
+                # Chi ha chiamato sa che rimandare non e' sicuro: decide lui.
+                raise AmbiguousRequestError(
+                    f"{method} {path} con esito sconosciuto - {last_error}"
+                )
             if attempt >= self.config.exchange.max_retries:
                 break
 
@@ -341,9 +357,35 @@ class BinanceBroker(Broker):
             params["timeInForce"] = (order.time_in_force or TimeInForce.GTC).value
 
         started_ns = self.clock.monotonic_ns()
-        payload = await self._request(
-            "POST", "/api/v3/order", params=params, signed=True, weight=1
-        )
+        try:
+            payload = await self._request(
+                "POST",
+                "/api/v3/order",
+                params=params,
+                signed=True,
+                weight=1,
+                retryable=False,
+            )
+        except AmbiguousRequestError as exc:
+            # L'ordine puo' essere stato eseguito: si domanda, non si rimanda.
+            logger.warning(
+                "invio di %s con esito incerto (%s): interrogo l'exchange",
+                order.client_order_id,
+                exc,
+            )
+            ack = await self.order_status(order.symbol, order.client_order_id)
+            if ack is None:
+                raise BrokerError(
+                    f"ordine {order.client_order_id}: esito sconosciuto e non risulta "
+                    "all'exchange. Non viene rimandato in automatico: lo stato va "
+                    "verificato prima di riprovare."
+                ) from exc
+            logger.warning(
+                "ordine %s gia' presente sull'exchange con stato %s",
+                order.client_order_id,
+                ack.status.value,
+            )
+            return ack
         latency_ms = (self.clock.monotonic_ns() - started_ns) / 1_000_000
         return self._to_ack(payload, latency_ms)
 

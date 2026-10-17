@@ -11,7 +11,7 @@ from backtest.costs import CostModel
 from config.schema import AppConfig, CostsConfig, load_config
 from core.clock import SimulatedClock
 from core.portfolio import Portfolio
-from core.types import Candle, SymbolFilters, Trade
+from core.types import Candle, Fill, Order, OrderStatus, OrderType, Side, SymbolFilters, Trade
 from data.orderbook import DepthUpdate
 from execution.broker import PaperBroker
 from execution.idempotency import OrderRegistry
@@ -67,10 +67,16 @@ def bot(config: AppConfig, tmp_path: Path) -> TradingBot:
 
 
 def feed_candles(bot: TradingBot, count: int, *, symbol: str = "BTCUSDT") -> None:
-    """Riempie il warmup con candele crescenti."""
+    """Riempie il warmup con candele crescenti, facendo scorrere l'orologio.
+
+    Il tempo avanza insieme ai dati, come dal vivo: una fixture che consegna
+    trecento candele a orologio fermo crea uno stato che non esiste, e fa
+    passare o fallire i test per il motivo sbagliato.
+    """
     price = D("60000")
     for i in range(count):
         price = (price * D("1.0005")).quantize(D("0.01"))
+        bot.clock.advance_to(NOW + (i + 1) * MINUTE - 1)  # type: ignore[attr-defined]
         bot.on_candle(
             Candle(
                 symbol=symbol,
@@ -115,7 +121,9 @@ class TestDecisionFlow:
     @pytest.mark.asyncio
     async def test_dalla_candela_allordine_eseguito(self, bot: TradingBot) -> None:
         feed_candles(bot, 300)
-        bot.clock.advance_by(MINUTE)  # type: ignore[attr-defined]
+        # Nessun salto temporale aggiuntivo: la fixture fa gia' scorrere
+        # l'orologio con i dati, e un minuto di silenzio in piu' farebbe
+        # scattare il controllo sul feed fermo, giustamente.
         order = await bot.evaluate_symbol("BTCUSDT")
         assert order is not None
         assert bot.portfolio.positions["BTCUSDT"].quantity > 0
@@ -305,3 +313,273 @@ class TestTracciabilita:
             intent="OPEN", ts_ms=NOW,
         )
         assert primo != secondo
+
+
+class TestProtezioniPersistenti:
+    """Un riavvio non deve cancellare le protezioni: il container ha
+    restart automatico, e un kill switch dimenticato significa che il bot
+    riprende a operare proprio dopo che qualcosa e' andato storto."""
+
+    def _bot(self, config: AppConfig, tmp_path: Path, clock: SimulatedClock) -> TradingBot:
+        broker = PaperBroker(
+            clock=clock,
+            costs=CostModel(CostsConfig()),
+            filters={"BTCUSDT": filters_for("BTCUSDT")},
+            balances={"USDT": D("200")},
+        )
+        broker.set_price("BTCUSDT", D("60000"))
+        return TradingBot(
+            config=config,
+            clock=clock,
+            broker=broker,
+            generator=AlwaysTradingGenerator(),
+            portfolio=Portfolio(D("200")),
+            registry=OrderRegistry(tmp_path / "orders.json"),
+            alerts=AlertManager(clock),
+            decision_log=DecisionLogger(mode="test"),
+            state_store=StateStore(tmp_path / "state.json", clock, mode="test"),
+            store=None,
+        )
+
+    def test_il_kill_switch_sopravvive_al_riavvio(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        clock = SimulatedClock(NOW)
+        primo = self._bot(config, tmp_path, clock)
+        primo.risk.killswitch.trip_manually("drawdown di prova", NOW)
+        primo.snapshot_state(force=True)
+
+        secondo = self._bot(config, tmp_path, clock)
+        assert secondo.risk.killswitch.is_tripped
+        assert not secondo.risk.killswitch.allows_opening(NOW)
+
+    def test_anche_il_massimo_storico_sopravvive(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        """Senza il massimo storico il drawdown totale riparte da zero e il
+        limite complessivo non scatta mai."""
+        clock = SimulatedClock(NOW)
+        primo = self._bot(config, tmp_path, clock)
+        primo.portfolio.peak_equity = D("260")
+        primo.portfolio.day_start_equity = D("250")
+        primo.snapshot_state(force=True)
+
+        secondo = self._bot(config, tmp_path, clock)
+        assert secondo.portfolio.peak_equity == D("260")
+        assert secondo.portfolio.day_start_equity == D("250")
+
+    def test_il_cooldown_riparte_dallistante_salvato(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        clock = SimulatedClock(NOW)
+        primo = self._bot(config, tmp_path, clock)
+        primo.risk.killswitch.trip_manually("stop", NOW)
+        primo.snapshot_state(force=True)
+
+        secondo = self._bot(config, tmp_path, clock)
+        assert secondo.risk.killswitch.tripped_at_ms == NOW
+
+
+class TestSupervisione:
+    @pytest.mark.asyncio
+    async def test_il_prezzo_dei_trade_aggiorna_lequity(self, bot: TradingBot) -> None:
+        """F07: con il mark fermo all'ultima candela, il drawdown legge uno
+        stato vecchio fino a un minuto."""
+        feed_candles(bot, 5)
+        bot.portfolio.apply_fill(
+            Fill("x", "BTCUSDT", Side.BUY, D("60000"), D("0.001"), D("0"), "USDT",
+                 NOW, False, "t")
+        )
+        prima = bot.portfolio.equity
+        bot.on_trade(Trade("BTCUSDT", 1, D("30000"), D("0.1"), NOW + 1, False))
+        assert bot.portfolio.equity < prima
+
+    def test_una_candela_aperta_non_vale_come_segno_di_vita(
+        self, bot: TradingBot
+    ) -> None:
+        """F16: registrare la chiusura futura di una candela in formazione
+        nasconde un feed fermo."""
+        futura = Candle(
+            symbol="BTCUSDT", open_time_ms=NOW, close_time_ms=NOW + 3_600_000,
+            open=D("60000"), high=D("60000"), low=D("60000"), close=D("60000"),
+            volume=D("1"), quote_volume=D("60000"), trades=1, is_closed=False,
+        )
+        bot.clock.advance_by(1_000)  # type: ignore[attr-defined]
+        bot.on_candle(futura)
+        eventi = bot.risk.killswitch.check(
+            bot.portfolio.snapshot(bot.clock.now_ms() + 60_000),
+            now_ms=bot.clock.now_ms() + 60_000,
+        )
+        assert any(e.reason.value == "DATA_STALENESS" for e in eventi)
+
+    @pytest.mark.asyncio
+    async def test_un_guasto_nel_resync_non_salta_il_kill_switch(
+        self, bot: TradingBot
+    ) -> None:
+        """F06: se tutti i compiti stanno nello stesso try, un errore in uno
+        impedisce i controlli di sicurezza degli altri."""
+        chiamate: list[int] = []
+
+        async def resync_rotto() -> None:
+            raise RuntimeError("book irraggiungibile")
+
+        originale = bot.check_killswitch
+
+        async def conta() -> None:
+            chiamate.append(1)
+            await originale()
+
+        bot.resync_books = resync_rotto  # type: ignore[method-assign]
+        bot.check_killswitch = conta  # type: ignore[method-assign]
+        bot.running = True
+        await bot._supervise(max_iterations=1)
+        assert chiamate == [1]
+
+    @pytest.mark.asyncio
+    async def test_le_decisioni_non_crescono_senza_limite(
+        self, bot: TradingBot
+    ) -> None:
+        """F31: dieci decisioni al secondo per giorni esauriscono la memoria."""
+        from core.types import Decision
+
+        for i in range(bot.risk.max_decisions_kept + 500):
+            bot.risk.decisions.append(
+                Decision(NOW + i, "BTCUSDT", None, False, rejection_reasons=("x",))
+            )
+        bot.risk.trim_decisions()
+        assert len(bot.risk.decisions) <= bot.risk.max_decisions_kept
+
+
+class TestChiusuraDiEmergenza:
+    """Chiudere le posizioni non basta: un ordine di acquisto gia' inviato e
+    non ancora eseguito puo' riaprire esposizione subito dopo lo stop."""
+
+    @pytest.mark.asyncio
+    async def test_annulla_anche_gli_ordini_in_volo(self, bot: TradingBot) -> None:
+        from core.types import Order, OrderType
+
+        in_volo = Order(
+            client_order_id="tb-in-volo",
+            symbol="BTCUSDT",
+            side=Side.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=D("0.001"),
+            created_at_ms=NOW,
+            price=D("59000"),
+        )
+        bot.registry.reserve(in_volo)
+        annullati: list[str] = []
+
+        async def cancel(symbol: str, client_order_id: str) -> bool:
+            annullati.append(client_order_id)
+            return True
+
+        bot.broker.cancel = cancel  # type: ignore[method-assign]
+        await bot.flatten_all()
+        assert annullati == ["tb-in-volo"]
+
+    @pytest.mark.asyncio
+    async def test_non_si_dichiara_chiuso_se_resta_esposizione(
+        self, bot: TradingBot
+    ) -> None:
+        """F05: marcare la chiusura come fatta dopo il solo tentativo lascia
+        il kill switch convinto di aver messo tutto al sicuro."""
+        feed_candles(bot, 300)
+        await bot.evaluate_symbol("BTCUSDT")
+        assert not bot.portfolio.positions["BTCUSDT"].is_flat
+
+        async def rifiuta(order: object) -> None:
+            raise RuntimeError("exchange non raggiungibile")
+
+        bot.submit = rifiuta  # type: ignore[method-assign]
+        bot.risk.killswitch.trip_manually("stop", bot.clock.now_ms())
+        await bot.check_killswitch()
+
+        assert not bot.portfolio.positions["BTCUSDT"].is_flat
+        assert bot.risk.killswitch.flatten_pending, "la chiusura non e' avvenuta"
+
+
+class TestFillRecuperati:
+    """Gli ordini risolti al riavvio portano con se' le esecuzioni: se non
+    vengono applicate, il portafoglio resta indietro; se vengono applicate
+    due volte, raddoppia."""
+
+    @pytest.mark.asyncio
+    async def test_un_fill_recuperato_entra_nel_portafoglio(
+        self, bot: TradingBot
+    ) -> None:
+        fill = Fill("tb-x", "BTCUSDT", Side.BUY, D("60000"), D("0.001"), D("0.06"),
+                    "USDT", NOW, False, "tr-1")
+        bot.apply_fill(fill)
+        assert bot.portfolio.positions["BTCUSDT"].quantity == D("0.001")
+
+    @pytest.mark.asyncio
+    async def test_lo_stesso_fill_applicato_due_volte_conta_una(
+        self, bot: TradingBot
+    ) -> None:
+        fill = Fill("tb-x", "BTCUSDT", Side.BUY, D("60000"), D("0.001"), D("0.06"),
+                    "USDT", NOW, False, "tr-1")
+        bot.apply_fill(fill)
+        bot.apply_fill(fill)
+        assert bot.portfolio.positions["BTCUSDT"].quantity == D("0.001")
+
+    @pytest.mark.asyncio
+    async def test_un_doppione_non_finisce_nemmeno_nei_log(
+        self, bot: TradingBot
+    ) -> None:
+        """Il log e' l'autopsia: due righe per un'esecuzione sola
+        racconterebbero un'operazione che non e' mai avvenuta."""
+        import logging
+
+        righe: list[str] = []
+
+        class Conta(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                contesto = getattr(record, "context", {})
+                righe.append(str(contesto.get("event")))
+
+        finto = logging.getLogger("test.doppioni")
+        finto.handlers = [Conta()]
+        finto.setLevel(logging.INFO)
+        finto.propagate = False
+        bot.decision_log = DecisionLogger(finto, mode="test")
+
+        fill = Fill("tb-z", "BTCUSDT", Side.BUY, D("60000"), D("0.001"), D("0.06"),
+                    "USDT", NOW, False, "tr-2")
+        bot.apply_fill(fill)
+        bot.apply_fill(fill)
+        assert righe.count("fill") == 1
+        assert righe.count("equity") == 1
+
+    @pytest.mark.asyncio
+    async def test_un_ordine_parziale_ripescato_due_volte_conta_una(
+        self, bot: TradingBot
+    ) -> None:
+        """Un ordine eseguito a meta' resta aperto: la riconciliazione lo
+        ripesca a ogni giro e ogni volta riporta gli stessi fill."""
+        from execution.broker import OrderAck
+
+        fill = Fill("tb-y", "BTCUSDT", Side.BUY, D("60000"), D("0.002"), D("0.12"),
+                    "USDT", NOW, False, "tr-9")
+        ack = OrderAck(
+            client_order_id="tb-y", exchange_order_id="9",
+            status=OrderStatus.PARTIALLY_FILLED, filled_quantity=D("0.002"),
+            average_price=D("60000"), fills=(fill,), latency_ms=1.0,
+        )
+
+        async def stato(symbol: str, client_order_id: str) -> OrderAck:
+            return ack
+
+        ordine = Order(
+            client_order_id="tb-y", symbol="BTCUSDT", side=Side.BUY,
+            order_type=OrderType.LIMIT, quantity=D("0.004"), created_at_ms=NOW,
+            price=D("60000"),
+        )
+        bot.registry.reserve(ordine)
+        bot.broker.order_status = stato  # type: ignore[method-assign]
+
+        await bot.periodic_reconcile()
+        assert bot.portfolio.positions["BTCUSDT"].quantity == D("0.002")
+
+        await bot.periodic_reconcile()
+        assert bot.portfolio.positions["BTCUSDT"].quantity == D("0.002")

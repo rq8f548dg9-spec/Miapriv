@@ -16,6 +16,10 @@ from core.types import Fill, Position, TimestampMs
 
 __all__ = ["Portfolio", "PortfolioSnapshot", "TradeResult"]
 
+#: Quante esecuzioni ricordare per riconoscere i doppioni. Il bot gira
+#: per mesi: senza un tetto questo elenco crescerebbe per sempre.
+MAX_FILL_KEYS = 20_000
+
 
 @dataclass(frozen=True, slots=True)
 class TradeResult:
@@ -130,15 +134,27 @@ class Portfolio:
     """
 
     initial_cash: Decimal
+    #: Valuta di conto: serve a sapere in che moneta e' una commissione.
+    quote_asset: str = "USDT"
     cash: Decimal = field(init=False)
     positions: dict[str, Position] = field(default_factory=dict)
     mark_prices: dict[str, Decimal] = field(default_factory=dict)
     realized_pnl: Decimal = Decimal(0)
     fees_paid: Decimal = Decimal(0)
     trades: list[TradeResult] = field(default_factory=list)
+    #: Commissioni pagate in monete diverse dalla valuta di conto (tipicamente
+    #: BNB). Non si convertono: si registrano, cosi' il costo resta visibile
+    #: senza inventare un cambio.
+    fees_in_other_assets: dict[str, Decimal] = field(default_factory=dict)
     peak_equity: Decimal = field(init=False)
     day_start_equity: Decimal = field(init=False)
     _day_key: str | None = field(default=None, repr=False)
+    #: Esecuzioni gia' contabilizzate, per identificativo di trade. Lo stesso
+    #: fill puo' arrivare due volte (dalla risposta all'ordine e di nuovo
+    #: dalla riconciliazione di un ordine parziale ancora aperto): applicarlo
+    #: due volte raddoppierebbe la posizione sui libri senza che nulla sia
+    #: cambiato sull'exchange.
+    _applied_fills: dict[str, None] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         if self.initial_cash <= 0:
@@ -147,22 +163,59 @@ class Portfolio:
         self.peak_equity = self.initial_cash
         self.day_start_equity = self.initial_cash
 
+    @staticmethod
+    def _fill_key(fill: Fill) -> str | None:
+        """Chiave di un'esecuzione, o None se non e' identificabile.
+
+        Senza identificativo di trade due esecuzioni identiche sono
+        indistinguibili da una ripetuta: in quel caso si conta tutto, perche'
+        perdere un'esecuzione vera e' peggio che contarne una due volte.
+        """
+        return f"{fill.symbol}|{fill.trade_id}" if fill.trade_id else None
+
+    def has_applied(self, fill: Fill) -> bool:
+        """Vero se questa esecuzione e' gia' stata contabilizzata."""
+        key = self._fill_key(fill)
+        return key is not None and key in self._applied_fills
+
     def apply_fill(self, fill: Fill) -> TradeResult | None:
         """Registra un fill. Restituisce l'esito solo se ha chiuso esposizione.
 
         Il cash si muove per il controvalore scambiato piu' le fee: comprare
         consuma cash, vendere lo restituisce. Cosi' l'equity resta confrontabile
         con il saldo reale dell'exchange.
+
+        Un fill gia' visto non viene riapplicato: non e' un errore del
+        chiamante, e' il caso normale di un ordine parziale che la
+        riconciliazione ripesca finche' resta aperto.
         """
+        if self.has_applied(fill):
+            return None
+        key = self._fill_key(fill)
+        if key is not None:
+            self._applied_fills[key] = None
+            if len(self._applied_fills) > MAX_FILL_KEYS:
+                for vecchia in list(self._applied_fills)[:MAX_FILL_KEYS // 10]:
+                    del self._applied_fills[vecchia]
+
         position = self.positions.get(fill.symbol, Position(fill.symbol))
         was_open = not position.is_flat
         reduces = was_open and (position.quantity > 0) != (fill.signed_quantity > 0)
 
-        new_position, realized = position.apply_fill(fill)
+        new_position, realized = position.apply_fill(fill, quote_asset=self.quote_asset)
         self.positions[fill.symbol] = new_position
 
-        self.cash -= fill.signed_quantity * fill.price + fill.fee
-        self.fees_paid += fill.fee
+        # La liquidita' si muove per il controvalore scambiato, e per la
+        # commissione solo se e' stata pagata nella valuta di conto: una fee
+        # trattenuta in natura ha gia' ridotto le monete ricevute.
+        self.cash += fill.cash_delta(self.quote_asset)
+        self.fees_paid += fill.fee_value_in_quote(self.quote_asset)
+        if fill.fee > 0 and not (
+            fill.fee_in_quote(self.quote_asset) or fill.fee_in_base(self.quote_asset)
+        ):
+            self.fees_in_other_assets[fill.fee_asset] = (
+                self.fees_in_other_assets.get(fill.fee_asset, Decimal(0)) + fill.fee
+            )
         self.realized_pnl += realized
         self.mark_prices[fill.symbol] = fill.price
         self._update_peak()

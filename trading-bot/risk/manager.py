@@ -99,6 +99,10 @@ class RiskManager:
     limits: LimitChecker
     client_order_id_factory: ClientOrderIdFactory
     decisions: list[Decision] = field(default_factory=list)
+    #: Decisioni conservate in memoria. A dieci valutazioni al secondo, una
+    #: lista senza limite consuma la RAM nel giro di giorni: le righe piu'
+    #: vecchie restano comunque nel log su disco.
+    max_decisions_kept: int = 5_000
 
     @classmethod
     def from_config(
@@ -125,6 +129,14 @@ class RiskManager:
             ),
             client_order_id_factory=client_order_id_factory,
         )
+
+    def trim_decisions(self) -> int:
+        """Scarta le decisioni piu' vecchie oltre il limite. Restituisce quante."""
+        eccesso = len(self.decisions) - self.max_decisions_kept
+        if eccesso > 0:
+            del self.decisions[:eccesso]
+            return eccesso
+        return 0
 
     # -- valutazione ------------------------------------------------------
 
@@ -157,7 +169,9 @@ class RiskManager:
                 + (f": {last.describe()}" if last else "")
             )
 
-        if context.filters.is_stale(now_ms, self.config.exchange.exchange_info_refresh_s * 1000):
+        if intent.adds_exposure and context.filters.is_stale(
+            now_ms, self.config.exchange.exchange_info_refresh_s * 1000
+        ):
             reasons.append(
                 f"filtri di {signal.symbol} non aggiornati "
                 f"(letti a {context.filters.fetched_at_ms}): vanno riletti da exchangeInfo"
@@ -213,6 +227,7 @@ class RiskManager:
             mode=self.config.mode.value,
         )
         self.decisions.append(decision)
+        self.trim_decisions()
         return decision
 
     def flatten_all(self, snapshot: PortfolioSnapshot, prices: dict[str, Decimal],
@@ -364,6 +379,7 @@ class RiskManager:
             mode=self.config.mode.value,
         )
         self.decisions.append(decision)
+        self.trim_decisions()
         return decision
 
     def _risk_snapshot(

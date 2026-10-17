@@ -796,6 +796,37 @@ class TestPortfolioAccounting:
         assert portfolio.equity == D("200")
         assert portfolio.snapshot(NOW).daily_drawdown_pct == 0.0
 
+    def test_lo_stesso_fill_non_si_conta_due_volte(self) -> None:
+        """Il libro mastro e' l'ultima difesa: chiunque gli passi due volte la
+        stessa esecuzione (riconciliazione, recupero al riavvio) non deve
+        riuscire a raddoppiare la posizione."""
+        portfolio = Portfolio(D("200"))
+        fill = buy_fill("0.001")
+        portfolio.apply_fill(fill)
+        portfolio.apply_fill(fill)
+        assert portfolio.positions["BTCUSDT"].quantity == D("0.001")
+        assert portfolio.cash == D("140")
+
+    def test_due_esecuzioni_distinte_si_contano_entrambe(self) -> None:
+        """La difesa contro i doppioni non deve mangiare esecuzioni vere."""
+        portfolio = Portfolio(D("200"))
+        portfolio.apply_fill(buy_fill("0.001", ts=NOW))
+        portfolio.apply_fill(buy_fill("0.001", ts=NOW + 1))
+        assert portfolio.positions["BTCUSDT"].quantity == D("0.002")
+
+    def test_senza_identificativo_si_conta_tutto(self) -> None:
+        """Perdere un'esecuzione vera e' peggio che contarne una due volte:
+        senza trade id non si puo' distinguere, e si contano entrambe."""
+        portfolio = Portfolio(D("200"))
+        for _ in range(2):
+            portfolio.apply_fill(
+                Fill(
+                    "c", "BTCUSDT", Side.BUY, BTC_PRICE, D("0.001"), D("0"), "USDT",
+                    NOW, False, "",
+                )
+            )
+        assert portfolio.positions["BTCUSDT"].quantity == D("0.002")
+
     def test_lequity_segue_il_prezzo(self) -> None:
         portfolio = Portfolio(D("200"))
         portfolio.apply_fill(buy_fill("0.001"))  # 60 di controvalore
@@ -855,3 +886,99 @@ class TestPortfolioAccounting:
     def test_capitale_iniziale_non_positivo_rifiutato(self) -> None:
         with pytest.raises(ValueError):
             Portfolio(D("0"))
+
+
+# ---------------------------------------------------------------------------
+# Commissioni: Binance le addebita sulla moneta che ricevi, non sempre in USDT
+# ---------------------------------------------------------------------------
+
+
+class TestCommissioniInValuteDiverse:
+    """Comprando BTC la commissione e' in BTC: si ricevono meno monete di
+    quante se ne sono comprate. Contabilizzarla come se fosse USDT falsifica
+    sia la posizione sia la liquidita', e la riconciliazione con l'exchange
+    diverge al primo ordine."""
+
+    def test_commissione_nella_moneta_comprata(self) -> None:
+        portfolio = Portfolio(D("200"))
+        portfolio.apply_fill(
+            Fill("c", "BTCUSDT", Side.BUY, D("100"), D("0.1"), D("0.0001"), "BTC",
+                 NOW, False, "t")
+        )
+        assert portfolio.positions["BTCUSDT"].quantity == D("0.0999")
+        assert portfolio.cash == D("190")
+
+    def test_commissione_nella_valuta_di_conto(self) -> None:
+        portfolio = Portfolio(D("200"))
+        portfolio.apply_fill(
+            Fill("c", "BTCUSDT", Side.BUY, D("100"), D("0.1"), D("0.01"), "USDT",
+                 NOW, False, "t")
+        )
+        assert portfolio.positions["BTCUSDT"].quantity == D("0.1")
+        assert portfolio.cash == D("189.99")
+
+    def test_commissione_in_una_terza_moneta(self) -> None:
+        """Pagando in BNB non si tocca ne' la posizione ne' il cash: il costo
+        esiste ma in un'altra valuta, e inventarne il cambio sarebbe peggio."""
+        portfolio = Portfolio(D("200"))
+        portfolio.apply_fill(
+            Fill("c", "BTCUSDT", Side.BUY, D("100"), D("0.1"), D("0.002"), "BNB",
+                 NOW, False, "t")
+        )
+        assert portfolio.positions["BTCUSDT"].quantity == D("0.1")
+        assert portfolio.cash == D("190")
+        assert portfolio.fees_in_other_assets == {"BNB": D("0.002")}
+
+    def test_la_vendita_incassa_al_netto(self) -> None:
+        portfolio = Portfolio(D("200"))
+        portfolio.apply_fill(
+            Fill("c", "BTCUSDT", Side.BUY, D("100"), D("1"), D("0"), "USDT",
+                 NOW, False, "t1")
+        )
+        portfolio.apply_fill(
+            Fill("c", "BTCUSDT", Side.SELL, D("110"), D("1"), D("0.11"), "USDT",
+                 NOW + 1, False, "t2")
+        )
+        assert portfolio.cash == D("209.89")
+        assert portfolio.positions["BTCUSDT"].is_flat
+
+    def test_il_giro_completo_include_la_commissione_di_ingresso(self) -> None:
+        """F15: un giro che perde 0,05 non puo' risultare in guadagno perche'
+        la commissione d'ingresso e' finita solo nel totale di portafoglio."""
+        portfolio = Portfolio(D("200"))
+        portfolio.apply_fill(
+            Fill("c", "BTCUSDT", Side.BUY, D("100"), D("1"), D("0.10"), "USDT",
+                 NOW, False, "t1")
+        )
+        esito = portfolio.apply_fill(
+            Fill("c", "BTCUSDT", Side.SELL, D("100.05"), D("1"), D("0.10"), "USDT",
+                 NOW + 1, False, "t2")
+        )
+        assert esito is not None
+        # incassato 100,05, speso 100 piu' 0,20 di commissioni -> perdita 0,15
+        assert esito.realized_pnl == D("-0.15")
+        assert esito.is_loss
+
+    def test_le_perdite_consecutive_contano_i_giri_veri(self) -> None:
+        """Il kill switch si basa su questo conteggio: se un giro in perdita
+        risulta in guadagno, la protezione non scatta quando dovrebbe."""
+        portfolio = Portfolio(D("1000"))
+        for i in range(3):
+            portfolio.apply_fill(
+                Fill("c", "BTCUSDT", Side.BUY, D("100"), D("1"), D("0.10"), "USDT",
+                     NOW + i * 2, False, f"e{i}")
+            )
+            portfolio.apply_fill(
+                Fill("c", "BTCUSDT", Side.SELL, D("100.05"), D("1"), D("0.10"), "USDT",
+                     NOW + i * 2 + 1, False, f"x{i}")
+            )
+        assert portfolio.consecutive_losses == 3
+
+    def test_lequity_resta_coerente_con_le_commissioni_in_base(self) -> None:
+        portfolio = Portfolio(D("200"))
+        portfolio.apply_fill(
+            Fill("c", "BTCUSDT", Side.BUY, D("100"), D("1"), D("0.001"), "BTC",
+                 NOW, False, "t")
+        )
+        # 100 di cash spesi, 0,999 BTC a 100 = 99,9 di valore
+        assert portfolio.equity == D("199.9")

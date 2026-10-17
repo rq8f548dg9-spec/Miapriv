@@ -13,7 +13,7 @@ live.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
 from backtest.costs import CostModel
@@ -159,7 +159,17 @@ class PaperBroker(Broker):
         self.prices[symbol] = price
 
     async def exchange_filters(self) -> dict[str, SymbolFilters]:
-        return dict(self.filters)
+        """Filtri con l'istante di lettura aggiornato.
+
+        Una vera chiamata a exchangeInfo restituisce dati freschi: il broker
+        di carta deve comportarsi allo stesso modo, altrimenti i filtri
+        risultano scaduti per sempre.
+        """
+        now_ms = self.clock.now_ms()
+        return {
+            symbol: replace(filters, fetched_at_ms=now_ms)
+            for symbol, filters in self.filters.items()
+        }
 
     async def account_state(self) -> AccountState:
         return AccountState(

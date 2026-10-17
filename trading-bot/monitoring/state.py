@@ -29,10 +29,12 @@ __all__ = ["BotState", "StateStore"]
 
 logger = logging.getLogger("trading_bot.state")
 
+#: Versione 3: aggiunge l'istante dello stop, senza il quale il kill
+#: switch non puo' essere ripristinato con il suo periodo di attesa.
 #: Versione 2: aggiunge le monete gia' presenti sul conto (baseline). Uno
 #: stato di versione 1 non la contiene, e senza di essa non si puo' dire
 #: quali monete appartengano al bot: viene scartato e si riparte dai saldi.
-STATE_VERSION = 2
+STATE_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +54,9 @@ class BotState:
     consecutive_losses: int
     killswitch_tripped: bool
     killswitch_reason: str | None
+    #: Istante in cui il kill switch e' scattato: serve a far ripartire il
+    #: periodo di attesa da dove era, non da capo.
+    killswitch_tripped_at_ms: TimestampMs | None = None
     #: Monete presenti sul conto prima che il bot iniziasse: non sono sue.
     baseline_holdings: dict[str, str] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
@@ -82,6 +87,11 @@ class BotState:
             consecutive_losses=int(payload["consecutive_losses"]),
             killswitch_tripped=bool(payload["killswitch_tripped"]),
             killswitch_reason=payload.get("killswitch_reason"),
+            killswitch_tripped_at_ms=(
+                int(payload["killswitch_tripped_at_ms"])
+                if payload.get("killswitch_tripped_at_ms") is not None
+                else None
+            ),
             baseline_holdings={
                 str(k): str(v) for k, v in dict(payload.get("baseline_holdings", {})).items()
             },
@@ -130,6 +140,7 @@ class StateStore:
             consecutive_losses=portfolio.consecutive_losses,
             killswitch_tripped=killswitch.is_tripped,
             killswitch_reason=last_event.describe() if last_event else None,
+            killswitch_tripped_at_ms=killswitch.tripped_at_ms,
             baseline_holdings={
                 symbol: str(quantity)
                 for symbol, quantity in (baseline_holdings or {}).items()

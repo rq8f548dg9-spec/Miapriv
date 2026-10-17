@@ -364,6 +364,53 @@ class Fill:
     def signed_quantity(self) -> Decimal:
         return self.quantity * self.side.sign
 
+    def base_asset(self, quote_asset: str) -> str:
+        """Moneta scambiata, dedotta dal simbolo."""
+        return self.symbol.removesuffix(quote_asset)
+
+    def fee_in_base(self, quote_asset: str) -> bool:
+        """Vero se la commissione e' trattenuta sulla moneta scambiata.
+
+        E' il caso normale di un acquisto su Binance: compri un BTC e te ne
+        accreditano 0,999.
+        """
+        return self.fee > 0 and self.fee_asset == self.base_asset(quote_asset)
+
+    def fee_in_quote(self, quote_asset: str) -> bool:
+        return self.fee > 0 and self.fee_asset == quote_asset
+
+    def fee_value_in_quote(self, quote_asset: str) -> Decimal:
+        """Commissione nella valuta di conto.
+
+        Quella in natura si valuta al prezzo dell'eseguito, che e' noto ed
+        esatto. Quella in una terza moneta (tipicamente BNB) non e'
+        convertibile senza un prezzo che qui non c'e': vale zero in questo
+        conteggio e viene registrata a parte, invece di essere inventata.
+        """
+        if self.fee_in_quote(quote_asset):
+            return self.fee
+        if self.fee_in_base(quote_asset):
+            return self.fee * self.price
+        return Decimal(0)
+
+    def net_base_delta(self, quote_asset: str) -> Decimal:
+        """Variazione effettiva della moneta scambiata, commissione inclusa."""
+        delta = self.signed_quantity
+        if self.fee_in_base(quote_asset):
+            delta -= self.fee
+        return delta
+
+    def cash_delta(self, quote_asset: str) -> Decimal:
+        """Variazione della liquidita'.
+
+        Il controvalore scambiato, piu' la commissione solo se pagata nella
+        valuta di conto: una fee in natura o in BNB non tocca il cash.
+        """
+        delta = -self.signed_quantity * self.price
+        if self.fee_in_quote(quote_asset):
+            delta -= self.fee
+        return delta
+
 
 @dataclass(frozen=True, slots=True)
 class Position:
@@ -398,25 +445,40 @@ class Position:
             return Decimal(0)
         return (mark_price - self.average_entry_price) * self.quantity
 
-    def apply_fill(self, fill: Fill) -> tuple[Position, Decimal]:
+    def apply_fill(
+        self, fill: Fill, *, quote_asset: str = "USDT"
+    ) -> tuple[Position, Decimal]:
         """Applica un fill e restituisce (nuova posizione, pnl realizzato dal fill).
 
         Gestisce apertura, incremento, riduzione parziale e inversione di segno.
         Le fee sono sempre sottratte: nessun risultato "al lordo".
+
+        Due cose che sembrano dettagli e non lo sono:
+
+        * la commissione puo' essere trattenuta sulla moneta comprata, e in
+          quel caso le monete che arrivano davvero sono meno di quelle
+          eseguite. Ignorarlo fa credere al bot di possedere piu' di quanto
+          ha, e la riconciliazione con l'exchange diverge al primo ordine;
+        * la commissione d'ingresso entra nel prezzo di carico, cosi' ogni
+          chiusura se la porta dietro: un giro in perdita non puo' risultare
+          in guadagno solo perche' quella fee era stata contata altrove.
         """
         if fill.symbol != self.symbol:
             raise ValueError(f"fill su {fill.symbol} applicato a posizione {self.symbol}")
 
-        delta = fill.signed_quantity
+        delta = fill.net_base_delta(quote_asset)
+        fee_quote = fill.fee_value_in_quote(quote_asset)
         new_quantity = self.quantity + delta
         realized = Decimal(0)
         new_entry = self.average_entry_price
 
         if self.quantity == 0 or (self.quantity > 0) == (delta > 0):
-            # apertura o incremento: media ponderata del prezzo di carico
-            total_cost = (
-                self.average_entry_price * abs(self.quantity) + fill.price * fill.quantity
+            # Apertura o incremento: il carico e' quanto e' costato davvero,
+            # commissione inclusa, diviso per le monete effettivamente avute.
+            cost_of_fill = fill.price * fill.quantity + (
+                fee_quote if fill.fee_in_quote(quote_asset) else Decimal(0)
             )
+            total_cost = self.average_entry_price * abs(self.quantity) + cost_of_fill
             new_entry = total_cost / abs(new_quantity) if new_quantity != 0 else Decimal(0)
         else:
             closed = min(abs(delta), abs(self.quantity))
@@ -424,6 +486,7 @@ class Position:
             realized = (fill.price - self.average_entry_price) * closed * (
                 Decimal(1) if self.quantity > 0 else Decimal(-1)
             )
+            realized -= fee_quote
             if new_quantity == 0:
                 new_entry = Decimal(0)
             elif (new_quantity > 0) != (self.quantity > 0):
@@ -435,12 +498,12 @@ class Position:
                 symbol=self.symbol,
                 quantity=new_quantity,
                 average_entry_price=new_entry,
-                realized_pnl=self.realized_pnl + realized - fill.fee,
-                fees_paid=self.fees_paid + fill.fee,
+                realized_pnl=self.realized_pnl + realized,
+                fees_paid=self.fees_paid + fee_quote,
                 opened_at_ms=fill.ts_ms if self.is_flat else self.opened_at_ms,
                 last_update_ms=fill.ts_ms,
             ),
-            realized - fill.fee,
+            realized,
         )
 
 

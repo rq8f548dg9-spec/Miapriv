@@ -11,16 +11,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from backtest.costs import CostModel
 from config.credentials import Credentials, load_credentials
 from config.schema import AppConfig, CostsConfig, Mode
 from core.clock import Clock, LiveClock
 from core.portfolio import Portfolio
-from core.types import Candle, Fill, Order, OrderStatus, Side, SymbolFilters, TimestampMs, Trade
+from core.types import (
+    Candle,
+    Fill,
+    Order,
+    OrderStatus,
+    Position,
+    Side,
+    SymbolFilters,
+    TimestampMs,
+    Trade,
+    ms_to_datetime,
+)
 from data.ingest import MarketDataIngestor
 from data.orderbook import ApplyResult, DepthUpdate, OrderBookState
 from data.store import ParquetStore
@@ -29,7 +42,7 @@ from execution.broker import Broker, BrokerError, PaperBroker
 from execution.idempotency import DuplicateOrderError, OrderRegistry, client_order_id
 from execution.reconcile import Reconciler
 from features.engine import FeatureEngine
-from monitoring.alerts import AlertManager, LogChannel
+from monitoring.alerts import AlertManager, LogChannel, Severity
 from monitoring.logger import DecisionLogger
 from monitoring.state import StateStore
 from risk.manager import MarketContext, RiskManager
@@ -101,6 +114,9 @@ class TradingBot:
     needs_resync: set[str] = field(default_factory=set)
     last_order_latency_ms: float | None = None
     running: bool = False
+    _saved_peak_equity: Decimal | None = field(default=None, repr=False)
+    _saved_day_start_equity: Decimal | None = field(default=None, repr=False)
+    _day_key: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         self.features = FeatureEngine(self.config.features)
@@ -114,6 +130,20 @@ class TradingBot:
             if saved is not None and saved.baseline_holdings
             else None
         )
+        if saved is not None:
+            # Le protezioni si ripristinano: un riavvio non e' un modo per
+            # azzerare uno stop, un massimo storico o un drawdown in corso.
+            self.risk.killswitch.restore(
+                tripped_at_ms=saved.killswitch_tripped_at_ms,
+                reason=saved.killswitch_reason,
+            )
+            self._saved_peak_equity = saved.peak_equity
+            self._saved_day_start_equity = saved.day_start_equity
+            # Applicati subito, non solo dopo la ricostruzione dall'exchange:
+            # in backtest e in carta quella ricostruzione non avviene, e i
+            # riferimenti del drawdown ripartirebbero comunque da zero.
+            self._restore_drawdown_references()
+
         self.reconciler = Reconciler(
             broker=self.broker,
             registry=self.registry,
@@ -127,6 +157,13 @@ class TradingBot:
             self.books[symbol_config.symbol] = OrderBookState(
                 symbol_config.symbol, max_depth=self.config.data.orderbook_depth
             )
+
+    def _restore_drawdown_references(self) -> None:
+        """Rimette massimo storico e riferimento giornaliero salvati."""
+        if self._saved_peak_equity is not None:
+            self.portfolio.peak_equity = self._saved_peak_equity
+        if self._saved_day_start_equity is not None:
+            self.portfolio.day_start_equity = self._saved_day_start_equity
 
     # -- identificatori ---------------------------------------------------
 
@@ -162,13 +199,18 @@ class TradingBot:
         resolved, fills = await self.reconciler.resolve_pending_orders()
         if resolved:
             logger.warning("risolti %d ordini rimasti in volo", len(resolved))
+        # Le esecuzioni ritrovate sono esposizione vera: vanno contabilizzate,
+        # non solo scritte nei log. Dove lo stato si ricostruisce dai saldi
+        # reali (qui sotto) il conto viene comunque rifatto dall'exchange;
+        # dove non si puo' (carta, backtest) questa e' l'unica strada.
         for fill in fills:
-            self.decision_log.log_fill(fill)
+            self.apply_fill(fill)
 
         if self.config.mode.touches_exchange:
             prices = await self._initial_prices()
             self.portfolio = await self.reconciler.rebuild_portfolio(prices=prices)
             self.last_prices.update(prices)
+            self._restore_drawdown_references()
             # La base appena stabilita va salvata prima di qualunque ordine:
             # un crash qui la perderebbe, e al riavvio il bot adotterebbe
             # come propria la posizione che sta per aprire.
@@ -193,13 +235,20 @@ class TradingBot:
     def on_trade(self, trade: Trade) -> None:
         self.features.on_trade(trade)
         self.last_prices[trade.symbol] = trade.price
-        self.risk.killswitch.record_data(trade.symbol, trade.ts_ms)
+        # Il mark segue i trade, non solo le candele chiuse: con l'equity
+        # ferma fino al minuto successivo, drawdown e limiti leggono uno
+        # stato vecchio proprio quando il prezzo si muove in fretta.
+        if not self.portfolio.positions.get(trade.symbol, Position(trade.symbol)).is_flat:
+            self.portfolio.update_mark(trade.symbol, trade.price)
+        # Segno di vita: conta quando il dato e' arrivato, non quale istante
+        # dichiari. Un timestamp futuro nasconderebbe un feed fermo.
+        self.risk.killswitch.record_data(trade.symbol, self.clock.now_ms())
         if self.store is not None:
             self.store.add_trade(trade)
 
     def on_candle(self, candle: Candle) -> None:
         """Una candela chiusa e' il momento in cui si decide."""
-        self.risk.killswitch.record_data(candle.symbol, candle.close_time_ms)
+        self.risk.killswitch.record_data(candle.symbol, self.clock.now_ms())
         if self.store is not None:
             self.store.add_candle(candle)
         if not candle.is_closed:
@@ -227,7 +276,7 @@ class TradingBot:
             self.needs_resync.add(update.symbol)
             return
         self.features.on_book(update.symbol, book.snapshot())
-        self.risk.killswitch.record_data(update.symbol, update.event_time_ms)
+        self.risk.killswitch.record_data(update.symbol, self.clock.now_ms())
 
     def on_disconnect(self, ts_ms: TimestampMs, error: str) -> None:
         """Gli eventi persi durante la caduta non si recuperano: book invalidati."""
@@ -254,7 +303,18 @@ class TradingBot:
             return None
 
         price = self.last_prices.get(symbol)
+
+        # I filtri scadono. Rileggerli quando servono, invece di rifiutare e
+        # aspettare il timer, evita che il bot resti bloccato fino al
+        # riavvio: la chiamata e' in cache lato broker, quindi costa poco.
         symbol_filters = self.filters.get(symbol)
+        stale = symbol_filters is not None and symbol_filters.is_stale(
+            now_ms, self.config.exchange.exchange_info_refresh_s * 1000
+        )
+        if symbol_filters is None or stale:
+            if await self._safely("rilettura filtri", self._refresh_filters()):
+                symbol_filters = self.filters.get(symbol)
+
         if price is None or symbol_filters is None:
             logger.warning("nessun prezzo o filtro per %s: decisione saltata", symbol)
             return None
@@ -319,6 +379,16 @@ class TradingBot:
             self.apply_fill(fill, deterministic)
 
     def apply_fill(self, fill: Fill, order: Order | None = None) -> None:
+        """Contabilizza un'esecuzione, una volta sola.
+
+        Lo stesso fill puo' arrivare due volte: nella risposta all'ordine e
+        poi di nuovo dalla riconciliazione, che ripesca gli ordini parziali
+        finche' restano aperti. Contarlo due volte raddoppierebbe la
+        posizione sui libri senza che nulla sia cambiato sull'exchange.
+        """
+        if self.portfolio.has_applied(fill):
+            logger.debug("fill %s gia' contabilizzato, ignorato", fill.trade_id)
+            return
         self.portfolio.apply_fill(fill)
         self.decision_log.log_fill(fill, order)
         self.decision_log.log_equity(fill.ts_ms, self.portfolio.equity)
@@ -358,21 +428,92 @@ class TradingBot:
 
         if self.risk.killswitch.flatten_pending:
             await self.flatten_all()
-            self.risk.killswitch.mark_flattened()
+            # Si dichiara fatta solo se le posizioni sono davvero chiuse.
+            # Marcarla dopo il tentativo lascerebbe esposizione aperta con il
+            # kill switch convinto di aver gia' messo tutto al sicuro.
+            rimaste = {
+                symbol: str(position.quantity)
+                for symbol, position in self.portfolio.positions.items()
+                if not position.is_flat
+            }
+            if rimaste:
+                logger.critical("chiusura forzata incompleta, restano: %s", rimaste)
+                self.alerts.notify(
+                    key="flatten:incompleto",
+                    title="CHIUSURA FORZATA INCOMPLETA",
+                    detail=f"posizioni ancora aperte dopo lo stop: {rimaste}",
+                    severity=Severity.CRITICAL,
+                )
+            else:
+                self.risk.killswitch.mark_flattened()
 
     async def flatten_all(self) -> None:
-        """Chiude tutte le posizioni a mercato. Chiamata dal kill switch."""
+        """Chiude tutte le posizioni a mercato. Chiamata dal kill switch.
+
+        Prima si annullano gli ordini ancora in volo: un acquisto inviato e
+        non ancora eseguito riaprirebbe esposizione un istante dopo lo stop,
+        e il bot non ha piu' intenzione di gestirla.
+        """
+        await self.cancel_pending_orders()
         orders = self.risk.flatten_all(
             self.portfolio.snapshot(self.clock.now_ms()), self.last_prices, self.filters
         )
         logger.critical("chiusura forzata di %d posizioni", len(orders))
         for order in orders:
-            await self.submit(order)
+            try:
+                await self.submit(order)
+            except Exception:
+                # Un simbolo che non si chiude non deve impedire di chiudere
+                # gli altri. Cosa e' rimasto aperto lo verifica chi ha
+                # chiamato, guardando il portafoglio.
+                logger.critical(
+                    "chiusura di %s fallita, si prosegue con gli altri simboli",
+                    order.symbol,
+                    exc_info=True,
+                )
+
+    async def cancel_pending_orders(self) -> int:
+        """Annulla sull'exchange gli ordini registrati e non ancora conclusi."""
+        annullati = 0
+        for order_id in self.registry.pending_ids():
+            symbol = self.registry.symbol_of(order_id)
+            if symbol is None:
+                continue
+            try:
+                riuscito = await self.broker.cancel(symbol, order_id)
+            except BrokerError as exc:
+                logger.critical("annullamento di %s fallito: %s", order_id, exc)
+                self.alerts.notify(
+                    key=f"cancel:{order_id}",
+                    title="ORDINE IN VOLO NON ANNULLATO",
+                    detail=(
+                        f"{order_id} su {symbol} puo' ancora eseguirsi dopo lo stop: "
+                        f"{exc}"
+                    ),
+                    severity=Severity.CRITICAL,
+                )
+                continue
+            if riuscito:
+                self.registry.update(order_id, status=OrderStatus.CANCELED)
+                annullati += 1
+            else:
+                # Non annullabile vuol dire gia' concluso: il suo destino lo
+                # stabilisce la riconciliazione, non un'ipotesi.
+                logger.warning("ordine %s non annullabile, gia' concluso?", order_id)
+        if annullati:
+            logger.critical("annullati %d ordini ancora in volo", annullati)
+        return annullati
 
     async def periodic_reconcile(self) -> None:
         result = await self.reconciler.reconcile(
             self.portfolio, now_ms=self.clock.now_ms()
         )
+        # Un ordine che si esegue mentre nessuno guarda (parziale, o risposta
+        # persa) si scopre qui: la sua esecuzione va messa a libro subito,
+        # altrimenti il portafoglio resta indietro e alla riconciliazione
+        # successiva la differenza fa scattare il kill switch.
+        for fill in result.applied_fills:
+            self.apply_fill(fill)
         if not result.is_consistent:
             self.alerts.reconciliation_failed(result.describe())
 
@@ -410,25 +551,68 @@ class TradingBot:
         """Compiti periodici: decisioni, kill switch, riconciliazione, stato."""
         iterations = 0
         last_reconcile_ms = self.clock.now_ms()
+        last_filters_ms = self.clock.now_ms()
+
         while self.running:
             if max_iterations is not None and iterations >= max_iterations:
                 break
             iterations += 1
-            try:
-                await self.resync_books()
-                for symbol_config in self.config.enabled_symbols:
-                    await self.evaluate_symbol(symbol_config.symbol)
-                await self.check_killswitch()
+            now_ms = self.clock.now_ms()
 
-                now_ms = self.clock.now_ms()
-                if now_ms - last_reconcile_ms >= self.config.monitoring.reconcile_interval_s * 1000:
-                    await self.periodic_reconcile()
-                    last_reconcile_ms = now_ms
-                self.snapshot_state()
-            except Exception as exc:
-                logger.exception("errore nel ciclo principale")
-                self.alerts.critical_error("ciclo principale", exc)
-            await self.clock.sleep(1.0)
+            # Il kill switch per primo e in un blocco suo: un guasto in un
+            # altro compito non deve poter impedire il controllo che ferma
+            # il bot. Prima erano tutti nello stesso try, in fila.
+            await self._safely("kill switch", self.check_killswitch())
+
+            # Giorno nuovo, riferimento del drawdown giornaliero nuovo.
+            # Senza questo la soglia giornaliera misura dal primo avvio.
+            day_key = ms_to_datetime(now_ms).strftime("%Y-%m-%d")
+            if day_key != self._day_key:
+                self._day_key = day_key
+                self.portfolio.start_new_day(day_key)
+
+            await self._safely("riallineamento book", self.resync_books())
+
+            for symbol_config in self.config.enabled_symbols:
+                await self._safely(
+                    f"valutazione {symbol_config.symbol}",
+                    self.evaluate_symbol(symbol_config.symbol),
+                )
+
+            # I filtri scadono: senza rinnovo, dopo l'intervallo di refresh
+            # il risk manager rifiuterebbe ogni ingresso fino al riavvio.
+            if now_ms - last_filters_ms >= self.config.exchange.exchange_info_refresh_s * 1000:
+                await self._safely("rilettura filtri", self._refresh_filters())
+                last_filters_ms = now_ms
+
+            if now_ms - last_reconcile_ms >= self.config.monitoring.reconcile_interval_s * 1000:
+                await self._safely("riconciliazione", self.periodic_reconcile())
+                last_reconcile_ms = now_ms
+
+            self.snapshot_state()
+
+            uscita = max_iterations is not None and iterations >= max_iterations
+            if self.running and not uscita:
+                await self.clock.sleep(1.0)
+
+    async def _safely(self, nome: str, lavoro: Awaitable[Any]) -> bool:
+        """Esegue un compito periodico isolandone i guasti.
+
+        Restituisce ``False`` se e' fallito. Un compito rotto viene segnalato
+        e saltato: non deve trascinarsi dietro gli altri, e men che meno i
+        controlli di sicurezza.
+        """
+        try:
+            await lavoro
+        except Exception as exc:
+            logger.exception("errore nel compito periodico: %s", nome)
+            self.alerts.critical_error(nome, exc)
+            return False
+        return True
+
+    async def _refresh_filters(self) -> None:
+        """Rilegge i filtri da exchangeInfo. Il broker li tiene in cache."""
+        self.filters = await self.broker.exchange_filters()
 
 
 def build_bot(config: AppConfig, *, clock: Clock | None = None) -> TradingBot:

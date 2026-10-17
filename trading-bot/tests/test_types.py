@@ -81,13 +81,29 @@ class TestPosition:
         assert position.quantity == D(-1)
         assert position.average_entry_price == D(110)
 
-    def test_le_fee_sono_sempre_sottratte(self) -> None:
-        """Principio 5: nessun risultato al lordo delle commissioni."""
+    def test_la_commissione_di_ingresso_entra_nel_carico(self) -> None:
+        """Principio 5, nella forma corretta.
+
+        Aprire non realizza nulla: non c'e' ancora un giro. La commissione
+        d'ingresso finisce nel prezzo di carico, cosi' la chiusura se la
+        porta dietro e il giro non puo' risultare in guadagno per averla
+        dimenticata.
+        """
         fill = make_fill(Side.BUY, "100", "1", fee="0.5")
         position, realized = Position("BTCUSDT").apply_fill(fill)
-        assert realized == D("-0.5")
+        assert realized == 0
         assert position.fees_paid == D("0.5")
-        assert position.realized_pnl == D("-0.5")
+        assert position.average_entry_price == D("100.5")
+
+    def test_il_giro_completo_e_al_netto_di_entrambe_le_commissioni(self) -> None:
+        position = Position("BTCUSDT")
+        position, _ = position.apply_fill(make_fill(Side.BUY, "100", "1", fee="0.5"))
+        position, realized = position.apply_fill(
+            make_fill(Side.SELL, "101", "1", fee="0.5", ts=2)
+        )
+        # incassato 101, carico 100,5, meno 0,5 di commissione in uscita
+        assert realized == D("0")
+        assert position.fees_paid == D("1")
 
     def test_fill_di_un_altro_simbolo_rifiutato(self) -> None:
         fill = Fill("c", "ETHUSDT", Side.BUY, D(1), D(1), D(0), "USDT", 1, True, "t")

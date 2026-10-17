@@ -89,6 +89,29 @@ class KillSwitch:
             return True
         return self._cooldown_expired(now_ms) and self.config.auto_resume
 
+    def restore(
+        self, *, tripped_at_ms: TimestampMs | None, reason: str | None
+    ) -> None:
+        """Rimette il kill switch nello stato salvato prima di un riavvio.
+
+        Senza questo, far ripartire il processo e' il modo piu' semplice per
+        annullare uno stop: con il riavvio automatico del container succede
+        da solo, proprio dopo che qualcosa e' andato storto.
+        """
+        if tripped_at_ms is None:
+            return
+        self.tripped_at_ms = tripped_at_ms
+        self._flatten_pending = False  # la chiusura e' gia' stata tentata
+        self.events.append(
+            KillSwitchEvent(
+                TriggerReason.MANUAL,
+                reason or "stop ripristinato dallo stato salvato",
+                tripped_at_ms,
+                1.0,
+                1.0,
+            )
+        )
+
     def reset(self, now_ms: TimestampMs) -> bool:
         """Riarmo manuale. Rifiutato finche' il cooldown non e' scaduto."""
         if not self.is_tripped:

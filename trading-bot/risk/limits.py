@@ -161,9 +161,13 @@ class LimitChecker:
         """Motivi di rifiuto. Tupla vuota significa approvato dai limiti."""
         reasons: list[str] = []
         reasons.extend(self._check_no_short(proposal, snapshot))
-        reasons.extend(self._check_rate(proposal, now_ms))
 
         if proposal.intent.adds_exposure:
+            # La frequenza limita gli ingressi, non le uscite: una chiusura
+            # rifiutata perche' "troppo presto" lascia aperta una posizione
+            # che la strategia voleva abbandonare, ed e' esattamente il
+            # contrario di un controllo di rischio.
+            reasons.extend(self._check_rate(proposal, now_ms))
             reasons.extend(self._check_position_count(proposal, snapshot))
             reasons.extend(self._check_symbol_cap(proposal, snapshot))
             reasons.extend(self._check_gross_exposure(proposal, snapshot))
