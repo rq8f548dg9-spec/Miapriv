@@ -19,8 +19,9 @@ from typing import Any
 
 from backtest.costs import CostModel
 from config.credentials import Credentials, load_credentials
-from config.schema import AppConfig, CostsConfig, Mode
+from config.schema import INTERVAL_MS, AppConfig, CostsConfig, Mode
 from core.clock import Clock, LiveClock
+from core.ledger import EventLedger
 from core.portfolio import Portfolio
 from core.types import (
     Candle,
@@ -109,6 +110,10 @@ class TradingBot:
     decision_log: DecisionLogger
     state_store: StateStore
     store: ParquetStore | None = None
+    #: Registro a eventi del patrimonio. Distingue il denaro conferito
+    #: dal denaro guadagnato, e tiene la base del dimensionamento al
+    #: valore corrente invece che al deposito iniziale.
+    ledger: EventLedger | None = None
     #: Guida del conto: un solo processo alla volta puo' inviare ordini.
     #: ``None`` solo dove non si invia nulla (backtest, misure).
     lease: FileLease | None = None
@@ -131,6 +136,10 @@ class TradingBot:
     _last_purge_ms: TimestampMs = field(default=0, repr=False)
     #: Istante dell'ultimo segnale prodotto, per simbolo.
     _last_signal_ms: dict[str, TimestampMs] = field(default_factory=dict, repr=False)
+    #: Istante in cui e' arrivato l'ultimo dato di mercato, di qualunque
+    #: tipo. Serve a distinguere "non sta succedendo niente" da "il
+    #: flusso e' caduto": sono due cose molto diverse e si somigliano.
+    last_data_ms: TimestampMs = 0
     last_order_latency_ms: float | None = None
     running: bool = False
     #: Stop e target delle posizioni aperte, per simbolo.
@@ -144,6 +153,12 @@ class TradingBot:
             self.config.features, trade_capacity=self.config.data.buffer_capacity
         )
         self._last_purge_ms = self.clock.now_ms()
+        if self.ledger is not None:
+            # Il capitale in configurazione vale solo ad apertura del
+            # registro: dopo, la storia del conto e' quella scritta, e
+            # cento diventati centotrenta restano centotrenta.
+            self.ledger.apri_se_vuoto(self.config.capital_quote, ts_ms=self.clock.now_ms())
+            self.portfolio = self.ledger.replay(self.config.quote_asset).portfolio
         if self.lease is None:
             # Accanto allo stato: due processi che condividono lo stato sono
             # esattamente i due che non devono inviare ordini insieme.
@@ -200,7 +215,11 @@ class TradingBot:
             killswitch=self.risk.killswitch,
             quote_asset=self.config.quote_asset,
             symbols=tuple(s.symbol for s in self.config.enabled_symbols),
-            max_capital=self.config.capital_quote,
+            # Il tetto segue il capitale in gestione, non il primo
+            # deposito: altrimenti il guadagno non verrebbe mai reinvestito
+            # e ogni riavvio riporterebbe il bot al punto di partenza.
+            max_capital=self.portfolio.cash if self.ledger is not None
+            else self.config.capital_quote,
             baseline_holdings=baseline,
         )
         for symbol_config in self.config.enabled_symbols:
@@ -278,7 +297,67 @@ class TradingBot:
             # come propria la posizione che sta per aprire.
             self.snapshot_state(force=True)
 
+        self.preriscalda()
+
         self.decision_log.log_equity(self.clock.now_ms(), self.portfolio.equity, evento="avvio")
+
+    def capitale_in_gestione(self) -> Decimal:
+        """Patrimonio di cui il bot dispone adesso.
+
+        E' la base del dimensionamento, e cresce con i guadagni: non e' un
+        limite di rischio. I limiti restano quelli in configurazione e non
+        si alzano da soli, mai.
+        """
+        return self.portfolio.equity
+
+    def preriscalda(self) -> dict[str, int]:
+        """Riempie le finestre delle feature con lo storico gia' sul disco.
+
+        Senza, un bot che parte a freddo con candele da un minuto e 240
+        barre di warmup non decide niente per quattro ore: dalla finestra
+        sembra rotto, e invece sta aspettando. Le candele sono quelle
+        scaricate dall'utente, chiuse e passate: non c'e' niente da
+        inventare, si legge quello che c'e' gia'.
+
+        Restituisce quante barre sono entrate per simbolo.
+        """
+        if self.store is None:
+            return {}
+        now_ms = self.clock.now_ms()
+        barre = self.config.features.warmup_bars
+        passo_ms = INTERVAL_MS[self.config.data.candle_interval]
+        # Una finestra generosa (il triplo del necessario) per assorbire i
+        # buchi, ma non illimitata: il warmup riempito con la settimana
+        # scorsa darebbe feature su un mercato che non c'e' piu'.
+        finestra_ms = barre * passo_ms * 3
+        caricate: dict[str, int] = {}
+
+        for symbol_config in self.config.enabled_symbols:
+            symbol = symbol_config.symbol
+            candele = self.store.read_candles(
+                symbols=[symbol], start_ms=now_ms - finestra_ms, end_ms=now_ms
+            )
+            # Solo la coda recente: le barre piu' vecchie della finestra
+            # sarebbero comunque uscite da tutte le medie.
+            recenti = [c for c in candele if c.is_closed][-(barre + 1):]
+            if len(recenti) < barre:
+                if recenti:
+                    logger.info(
+                        "storico di %s insufficiente per il preriscaldamento "
+                        "(%d barre su %d): si attende il flusso dal vivo",
+                        symbol, len(recenti), barre,
+                    )
+                continue
+            for candela in recenti:
+                self.features.on_candle(candela)
+            self.last_prices.setdefault(symbol, recenti[-1].close)
+            self.portfolio.update_mark(symbol, recenti[-1].close)
+            caricate[symbol] = len(recenti)
+            logger.info(
+                "preriscaldamento di %s: %d barre dallo storico, ultima delle %s",
+                symbol, len(recenti), ms_to_datetime(recenti[-1].close_time_ms),
+            )
+        return caricate
 
     def _riarma_chiusura_se_resta_inventario(self) -> None:
         """Dopo un riavvio, confronta lo stop con l'inventario vero.
@@ -364,12 +443,14 @@ class TradingBot:
         # Segno di vita: conta quando il dato e' arrivato, non quale istante
         # dichiari. Un timestamp futuro nasconderebbe un feed fermo.
         self.risk.killswitch.record_data(trade.symbol, self.clock.now_ms())
+        self.last_data_ms = self.clock.now_ms()
         if self.store is not None:
             self.store.add_trade(trade)
 
     def on_candle(self, candle: Candle) -> None:
         """Una candela chiusa e' il momento in cui si decide."""
         self.risk.killswitch.record_data(candle.symbol, self.clock.now_ms())
+        self.last_data_ms = self.clock.now_ms()
         if self.store is not None:
             self.store.add_candle(candle)
         if not candle.is_closed:
@@ -385,6 +466,7 @@ class TradingBot:
             )
 
     def on_depth(self, update: DepthUpdate) -> None:
+        self.last_data_ms = self.clock.now_ms()
         book = self.books.get(update.symbol)
         if book is None:
             return
@@ -636,6 +718,11 @@ class TradingBot:
         if self.portfolio.has_applied(fill):
             logger.debug("fill %s gia' contabilizzato, ignorato", fill.trade_id)
             return
+        # Prima il registro, poi il portafoglio: morire fra le due
+        # scritture lascia un'esecuzione che la rilettura rimette a posto,
+        # mentre nell'ordine contrario andrebbe persa.
+        if self.ledger is not None:
+            self.ledger.record_fill(fill)
         self.portfolio.apply_fill(fill)
         self.decision_log.log_fill(fill, order)
         self.decision_log.log_equity(fill.ts_ms, self.portfolio.equity)
@@ -927,6 +1014,16 @@ class TradingBot:
         self.filters = await self.broker.exchange_filters()
 
 
+def percorso_registro(config: AppConfig) -> Path:
+    """Dove vive il registro del patrimonio: accanto allo stato.
+
+    Un posto solo, usato dal bot e dal pannello: due percorsi calcolati
+    separatamente diventano due registri diversi, e due verita' diverse su
+    quanto denaro c'e'.
+    """
+    return Path(config.monitoring.state_path).with_name("ledger.jsonl")
+
+
 def build_bot(config: AppConfig, *, clock: Clock | None = None) -> TradingBot:
     """Costruisce un bot completo dalla configurazione validata."""
     active_clock = clock or LiveClock()
@@ -939,6 +1036,7 @@ def build_bot(config: AppConfig, *, clock: Clock | None = None) -> TradingBot:
         broker=broker,
         generator=build_generator(config),
         portfolio=Portfolio(config.capital_quote),
+        ledger=EventLedger(percorso_registro(config)),
         registry=OrderRegistry(Path("state") / "orders.json"),
         alerts=AlertManager(
             active_clock,

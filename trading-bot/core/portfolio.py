@@ -270,6 +270,36 @@ class Portfolio:
             if attuale is None or sequenza > attuale:
                 self._fill_frontier[symbol] = sequenza
 
+    def deposita(self, importo: Decimal) -> None:
+        """Denaro entrato da fuori. Non e' un guadagno.
+
+        I riferimenti del drawdown si alzano insieme al contante: se non lo
+        facessero, bastterebbe versare per far sparire un calo in corso e
+        disarmare le protezioni proprio mentre servono.
+        """
+        if importo <= 0:
+            raise ValueError(f"versamento {importo} non positivo")
+        self.cash += importo
+        self.peak_equity += importo
+        self.day_start_equity += importo
+
+    def preleva(self, importo: Decimal) -> None:
+        """Denaro uscito. Non e' una perdita, e abbassa i riferimenti.
+
+        Si puo' prelevare solo il liquido: il resto e' dentro alle posizioni
+        aperte, e tirarlo fuori vorrebbe dire chiuderle.
+        """
+        if importo <= 0:
+            raise ValueError(f"prelievo {importo} non positivo")
+        if importo > self.cash:
+            raise ValueError(
+                f"prelievo {importo} oltre i {self.cash} liquidi: il resto e' "
+                "dentro alle posizioni aperte"
+            )
+        self.cash -= importo
+        self.peak_equity -= importo
+        self.day_start_equity -= importo
+
     def update_mark(self, symbol: str, price: Decimal) -> None:
         if price <= 0:
             raise ValueError(f"prezzo di mercato {price} non positivo per {symbol}")

@@ -28,6 +28,7 @@ import subprocess
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -44,14 +45,16 @@ from config.credentials import (
     load_dotenv,
 )
 from config.schema import AppConfig, Mode, load_config
+from core.ledger import EventKind, EventLedger, LedgerError
 from core.types import TimestampMs, datetime_to_ms, ms_to_datetime
 from data.store import ParquetStore
 from monitoring.logger import to_jsonable
-from runner import TradingBot, build_bot, build_generator
+from runner import TradingBot, build_bot, build_generator, percorso_registro
 
 __all__ = [
     "BotSupervisor",
     "create_app",
+    "errori_leggibili",
     "friendly_validation_message",
     "run_ui",
     "same_origin_only",
@@ -146,6 +149,164 @@ class BotSupervisor:
             "cartella": str(self.config.data.parquet_root),
         }
 
+    def attivita(self) -> dict[str, Any]:
+        """Cosa sta facendo il bot adesso, in parole.
+
+        Un pannello che mostra solo numeri fermi fa pensare che il bot sia
+        rotto proprio quando sta lavorando: con candele da un minuto, le
+        barre di warmup richiedono ore, e l'equity resta piatta finche' non
+        si chiude un'operazione. Qui si dice quale delle due cose e'.
+        """
+        bot = self.bot
+        necessarie = self.config.features.warmup_bars
+        if bot is None:
+            return {
+                "stato": "fermo",
+                "spiegazione": "il bot non è avviato.",
+                "flusso_attivo": False,
+                "ultimo_dato_ms": None,
+                "eta_dato_s": None,
+                "simboli": [
+                    {
+                        "simbolo": s.symbol,
+                        "barre": 0,
+                        "barre_necessarie": necessarie,
+                        "pronto": False,
+                        "ultimo_prezzo": None,
+                    }
+                    for s in self.config.enabled_symbols
+                ],
+                "ultima_decisione_ms": None,
+                "ultimo_motivo": None,
+            }
+
+        now_ms = bot.clock.now_ms()
+        eta_s = (now_ms - bot.last_data_ms) / 1000.0 if bot.last_data_ms else None
+        simboli: list[dict[str, Any]] = []
+        for symbol_config in self.config.enabled_symbols:
+            symbol = symbol_config.symbol
+            barre = bot.features.state_for(symbol).bars_seen
+            prezzo = bot.last_prices.get(symbol)
+            simboli.append(
+                {
+                    "simbolo": symbol,
+                    "barre": barre,
+                    "barre_necessarie": necessarie,
+                    "pronto": barre >= necessarie,
+                    "ultimo_prezzo": str(prezzo) if prezzo is not None else None,
+                }
+            )
+
+        ultima = bot.risk.decisions[-1] if bot.risk.decisions else None
+        motivo = None
+        if ultima is not None:
+            motivo = (
+                "approvata"
+                if ultima.approved
+                else (ultima.rejection_reasons[0] if ultima.rejection_reasons else "rifiutata")
+            )
+
+        mancanti = [s for s in simboli if not s["pronto"]]
+        if not bot.running:
+            stato = "fermo"
+            spiegazione = "il bot non è avviato."
+        elif eta_s is not None and eta_s > 120:
+            stato = "flusso dati fermo"
+            spiegazione = (
+                f"l'ultimo dato di mercato è arrivato {int(eta_s)} secondi fa: "
+                "la connessione potrebbe essere caduta. Il bot continua a "
+                "riprovare da solo."
+            )
+        elif mancanti:
+            peggiore = min(mancanti, key=lambda s: int(s["barre"]))
+            restano = necessarie - int(peggiore["barre"])
+            stato = f"raccolta dati, {peggiore['barre']}/{necessarie} candele"
+            spiegazione = (
+                f"prima di decidere servono {necessarie} candele chiuse per simbolo. "
+                f"Ne mancano {restano} su {peggiore['simbolo']}: con candele da un "
+                "minuto sono circa altrettanti minuti. Scaricare lo storico dal passo 2 "
+                "della preparazione le fornisce subito."
+            )
+        else:
+            stato = "operativo, in cerca di un segnale"
+            spiegazione = (
+                "i dati bastano e il bot valuta a ogni giro. Finche' il vantaggio "
+                "stimato non supera i costi non apre niente, ed è il comportamento "
+                "voluto: le decisioni rifiutate sono elencate qui sotto con il motivo."
+            )
+
+        return {
+            "stato": stato,
+            "spiegazione": spiegazione,
+            "flusso_attivo": eta_s is not None and eta_s <= 120,
+            "ultimo_dato_ms": bot.last_data_ms or None,
+            "eta_dato_s": round(eta_s, 1) if eta_s is not None else None,
+            "simboli": simboli,
+            "ultima_decisione_ms": ultima.ts_ms if ultima else None,
+            "ultimo_motivo": motivo,
+        }
+
+    def registro(self) -> EventLedger:
+        """Registro del patrimonio, sempre quello del bot."""
+        ledger = EventLedger(percorso_registro(self.config))
+        ledger.apri_se_vuoto(self.config.capital_quote, ts_ms=int(time.time() * 1000))
+        return ledger
+
+    def capitale(self) -> dict[str, Any]:
+        """I tre numeri, separati: conferito, guadagnato, presente."""
+        stato = self.registro().replay(self.config.quote_asset)
+        return {
+            "valuta": self.config.quote_asset,
+            "conferito": str(stato.conferito),
+            "prelevato": str(stato.prelevato),
+            "guadagno_netto": str(stato.pnl_netto),
+            "commissioni": str(stato.commissioni),
+            "in_gestione": str(stato.capitale_in_gestione),
+            "liquido": str(stato.portfolio.cash),
+            "movimenti": [
+                {
+                    "seq": evento.seq,
+                    "tipo": evento.kind.value,
+                    "ts_ms": evento.ts_ms,
+                    "importo": str(evento.amount),
+                    "nota": evento.note,
+                }
+                for evento in self.registro().events()
+                if evento.kind is not EventKind.ESECUZIONE
+            ][-20:],
+            "avvertenza": (
+                "Qui si registra il movimento, non si sposta denaro: il versamento "
+                "o il prelievo vanno fatti sull'exchange. Il bot non ha il permesso "
+                "di prelievo e non deve averlo."
+            ),
+        }
+
+    def registra_movimento(self, tipo: str, importo: Decimal) -> dict[str, Any]:
+        """Scrive un conferimento o un prelievo nel registro.
+
+        Solo a bot fermo: cambiare la base del dimensionamento mentre il
+        bot sta valutando vorrebbe dire due verita' diverse sullo stesso
+        patrimonio nello stesso istante.
+        """
+        if self.is_running:
+            raise UiError(
+                "ferma il bot prima di registrare un movimento di capitale: "
+                "cambiarlo mentre opera gli lascerebbe in mano un patrimonio "
+                "diverso da quello scritto"
+            )
+        ledger = self.registro()
+        adesso = int(time.time() * 1000)
+        try:
+            if tipo == "conferimento":
+                ledger.conferimento(importo, ts_ms=adesso, note="registrato dal pannello")
+            elif tipo == "prelievo":
+                ledger.prelievo(importo, ts_ms=adesso, note="registrato dal pannello")
+            else:
+                raise UiError(f"movimento sconosciuto: {tipo!r}")
+        except LedgerError as exc:
+            raise UiError(str(exc)) from exc
+        return self.capitale()
+
     def status(self) -> dict[str, Any]:
         bot = self.bot
         payload: dict[str, Any] = {
@@ -161,6 +322,7 @@ class BotSupervisor:
             "lavoro": self.job.to_dict() if self.job else None,
             "avviato_ms": self.started_at_ms,
             "dati": self.stored_candles(),
+            "attivita": self.attivita(),
         }
 
         if bot is None:
@@ -564,6 +726,25 @@ ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
 
 @web.middleware
+async def errori_leggibili(
+    request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
+) -> web.StreamResponse:
+    """Trasforma ogni UiError in un 400 con il messaggio in chiaro.
+
+    UiError esiste proprio per dire all'utente cosa correggere. Lasciarla
+    uscire la trasforma in un 500, e nel pannello si legge "errore 500":
+    la persona non sa cosa ha sbagliato e non puo' rimediare. E' successo
+    con il modulo dei movimenti di capitale, che inviava il corpo senza
+    dichiararlo JSON.
+    """
+    try:
+        return await handler(request)
+    except UiError as exc:
+        logger.info("richiesta rifiutata: %s", exc)
+        return _error(str(exc))
+
+
+@web.middleware
 async def same_origin_only(
     request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
 ) -> web.StreamResponse:
@@ -620,7 +801,7 @@ async def same_origin_only(
 def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Application:
     """Costruisce l'applicazione web del pannello."""
     supervisor = BotSupervisor(config_path=config_path, config=load_config(config_path))
-    app = web.Application(middlewares=[same_origin_only])
+    app = web.Application(middlewares=[errori_leggibili, same_origin_only])
     app["supervisor"] = supervisor
 
     async def index(request: web.Request) -> web.StreamResponse:
@@ -783,6 +964,21 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
         except UiError as exc:
             return _error(str(exc))
         return _json({"ok": True, "posizioni": closed})
+
+    async def capital(request: web.Request) -> web.Response:
+        return _json(supervisor.capitale())
+
+    async def capital_movement(request: web.Request) -> web.Response:
+        payload = await _read_json(request)
+        tipo = str(payload.get("tipo", ""))
+        try:
+            importo = Decimal(str(payload.get("importo", "0")))
+        except (ArithmeticError, ValueError):
+            return _error("importo non numerico")
+        try:
+            return _json(supervisor.registra_movimento(tipo, importo))
+        except UiError as exc:
+            return _error(str(exc))
 
     async def reset_killswitch(request: web.Request) -> web.Response:
         try:
@@ -948,6 +1144,8 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
     app.router.add_post("/api/ferma", stop_bot)
     app.router.add_post("/api/chiudi-tutto", flatten)
     app.router.add_post("/api/killswitch-reset", reset_killswitch)
+    app.router.add_get("/api/capitale", capital)
+    app.router.add_post("/api/capitale/movimento", capital_movement)
     app.router.add_post("/api/scarica-dati", fetch_data)
     app.router.add_post("/api/backtest", run_backtest)
     app.router.add_get("/api/lavoro", job_status)

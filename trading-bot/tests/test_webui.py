@@ -587,3 +587,197 @@ class TestIndirizzoDelPannello:
             "/api/ferma", headers={"Host": f"localhost:{port}"}
         )
         assert response.status == 200
+
+
+class TestAttivita:
+    """«L'ho fatto partire ma non succede niente» e' la risposta giusta a un
+    pannello che non dice cosa sta facendo. Il bot in realta' sta
+    raccogliendo candele: finche' non ne ha abbastanza non puo' decidere, e
+    questo deve vedersi, insieme al motivo per cui non opera."""
+
+    def _supervisore(self, config_file: Path) -> BotSupervisor:
+        from config.schema import load_config
+
+        return BotSupervisor(config_path=config_file, config=load_config(config_file))
+
+    def test_a_bot_fermo_lo_dice(self, config_file: Path) -> None:
+        attivita = self._supervisore(config_file).status()["attivita"]
+        assert attivita["stato"] == "fermo"
+        assert attivita["flusso_attivo"] is False
+
+    def test_durante_il_preriscaldamento_mostra_le_barre_che_mancano(
+        self, config_file: Path, tmp_path: Path
+    ) -> None:
+        from config.schema import load_config
+        from core.types import Candle
+        from tests.test_runner import D, make_bot
+
+        config = load_config(config_file)
+        supervisor = self._supervisore(config_file)
+        bot = make_bot(config, tmp_path)
+        for i in range(3):
+            bot.features.on_candle(
+                Candle(
+                    symbol="BTCUSDT",
+                    open_time_ms=1_700_000_000_000 + i * 60_000,
+                    close_time_ms=1_700_000_000_000 + (i + 1) * 60_000 - 1,
+                    open=D("1"), high=D("1"), low=D("1"), close=D("1"),
+                    volume=D("1"), quote_volume=D("1"), trades=1, is_closed=True,
+                )
+            )
+        bot.running = True
+        supervisor.bot = bot
+
+        attivita = supervisor.status()["attivita"]
+        per_simbolo = {s["simbolo"]: s for s in attivita["simboli"]}
+        assert per_simbolo["BTCUSDT"]["barre"] == 3
+        assert per_simbolo["BTCUSDT"]["barre_necessarie"] == config.features.warmup_bars
+        assert per_simbolo["BTCUSDT"]["pronto"] is False
+        assert "dati" in attivita["stato"] or "candele" in attivita["stato"]
+        assert attivita["spiegazione"]
+
+    def test_a_dati_pronti_dichiara_che_sta_cercando_un_segnale(
+        self, config_file: Path, tmp_path: Path
+    ) -> None:
+        from config.schema import load_config
+        from core.types import Candle
+        from tests.test_runner import D, make_bot
+
+        config = load_config(config_file)
+        supervisor = self._supervisore(config_file)
+        bot = make_bot(config, tmp_path)
+        for symbol, partenza in (("BTCUSDT", D("60000")), ("ETHUSDT", D("3000"))):
+            prezzo = partenza
+            for i in range(config.features.warmup_bars + 1):
+                prezzo = (prezzo * D("1.0002")).quantize(D("0.01"))
+                bot.features.on_candle(
+                    Candle(
+                        symbol=symbol,
+                        open_time_ms=1_700_000_000_000 + i * 60_000,
+                        close_time_ms=1_700_000_000_000 + (i + 1) * 60_000 - 1,
+                        open=prezzo, high=prezzo * D("1.001"), low=prezzo * D("0.999"),
+                        close=prezzo, volume=D("10"), quote_volume=prezzo * D("10"),
+                        trades=10, is_closed=True,
+                    )
+                )
+        bot.running = True
+        supervisor.bot = bot
+
+        attivita = supervisor.status()["attivita"]
+        per_simbolo = {s["simbolo"]: s for s in attivita["simboli"]}
+        assert per_simbolo["BTCUSDT"]["pronto"] is True
+        assert "segnale" in attivita["stato"]
+
+    def test_mostra_leta_dellultimo_dato_ricevuto(
+        self, config_file: Path, tmp_path: Path
+    ) -> None:
+        """Un flusso caduto si riconosce da qui: il bot gira, i dati no."""
+        from config.schema import load_config
+        from tests.test_runner import make_bot
+
+        config = load_config(config_file)
+        supervisor = self._supervisore(config_file)
+        bot = make_bot(config, tmp_path)
+        bot.last_data_ms = bot.clock.now_ms() - 45_000
+        bot.running = True
+        supervisor.bot = bot
+
+        attivita = supervisor.status()["attivita"]
+        assert attivita["eta_dato_s"] == pytest.approx(45.0, abs=1.0)
+
+
+class TestCapitale:
+    """Il pannello deve dire tre numeri separati: quanto hai messo, quanto
+    hai guadagnato, quanto c'e' adesso. Se li somma in uno solo, un
+    versamento sembra un profitto."""
+
+    @pytest.fixture
+    def config_isolato(self, tmp_path: Path, raw_config: dict[str, Any]) -> Path:
+        raw = dict(raw_config)
+        raw["monitoring"] = dict(raw["monitoring"])
+        raw["monitoring"]["state_path"] = str(tmp_path / "stato" / "bot_state.json")
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        return path
+
+    @pytest.fixture
+    async def client_isolato(self, config_isolato: Path, tmp_path: Path) -> Any:
+        app = create_app(config_isolato, env_path=tmp_path / ".env")
+        async with TestClient(TestServer(app)) as test_client:
+            yield test_client
+
+    async def test_al_primo_avvio_mostra_il_capitale_dichiarato(
+        self, client_isolato: TestClient[Any, Any]
+    ) -> None:
+        payload = await (await client_isolato.get("/api/capitale")).json()
+        assert payload["conferito"] == "200"
+        assert payload["prelevato"] == "0"
+        assert payload["guadagno_netto"] == "0"
+        assert payload["in_gestione"] == "200"
+
+    async def test_un_conferimento_alza_la_base_senza_essere_un_guadagno(
+        self, client_isolato: TestClient[Any, Any]
+    ) -> None:
+        risposta = await client_isolato.post(
+            "/api/capitale/movimento", json={"tipo": "conferimento", "importo": "50"}
+        )
+        assert risposta.status == 200
+        payload = await (await client_isolato.get("/api/capitale")).json()
+        assert payload["conferito"] == "250"
+        assert payload["guadagno_netto"] == "0"
+        assert payload["in_gestione"] == "250"
+
+    async def test_un_prelievo_oltre_il_disponibile_viene_rifiutato(
+        self, client_isolato: TestClient[Any, Any]
+    ) -> None:
+        risposta = await client_isolato.post(
+            "/api/capitale/movimento", json={"tipo": "prelievo", "importo": "10000"}
+        )
+        assert risposta.status == 400
+        messaggio = (await risposta.json())["errore"]
+        assert "liquid" in messaggio
+        payload = await (await client_isolato.get("/api/capitale")).json()
+        assert payload["in_gestione"] == "200"
+
+    async def test_un_tipo_inventato_viene_rifiutato(
+        self, client_isolato: TestClient[Any, Any]
+    ) -> None:
+        risposta = await client_isolato.post(
+            "/api/capitale/movimento", json={"tipo": "regalo", "importo": "10"}
+        )
+        assert risposta.status == 400
+
+    async def test_il_pannello_non_sposta_denaro_vero(
+        self, client_isolato: TestClient[Any, Any]
+    ) -> None:
+        """Registrare un versamento e' contabilita', non un bonifico: il
+        trasferimento lo fa la persona sull'exchange. Il bot non ha e non
+        deve avere il permesso di prelievo."""
+        payload = await (await client_isolato.get("/api/capitale")).json()
+        assert payload["avvertenza"]
+        assert "exchange" in payload["avvertenza"].lower()
+
+
+class TestErroriDelPannelloNonDiventano500:
+    """Un errore che l'utente puo' correggere deve arrivargli scritto. Se
+    diventa un 500, il pannello mostra solo "errore 500" e la persona non
+    ha idea di cosa sia andato storto: e' successo davvero con il modulo
+    dei movimenti di capitale, che inviava il corpo senza dichiararlo
+    JSON."""
+
+    async def test_corpo_senza_content_type_e_un_errore_leggibile(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        risposta = await client.post(
+            "/api/capitale/movimento",
+            data='{"tipo": "conferimento", "importo": "1"}',
+        )
+        assert risposta.status == 400
+        assert "JSON" in (await risposta.json())["errore"]
+
+    async def test_vale_per_tutti_gli_endpoint_con_un_corpo(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        risposta = await client.post("/api/scarica-dati", data='{"giorni": 1}')
+        assert risposta.status == 400
+        assert (await risposta.json())["errore"]

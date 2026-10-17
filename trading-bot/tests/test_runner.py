@@ -11,9 +11,11 @@ import pytest
 from backtest.costs import CostModel
 from config.schema import AppConfig, CostsConfig, load_config
 from core.clock import SimulatedClock
+from core.ledger import EventLedger
 from core.portfolio import Portfolio
 from core.types import Candle, Fill, Order, OrderStatus, OrderType, Side, SymbolFilters, Trade
 from data.orderbook import DepthUpdate
+from data.store import ParquetStore
 from execution.broker import OrderAck, PaperBroker
 from execution.idempotency import OrderRegistry
 from monitoring.alerts import Alert, AlertManager
@@ -80,6 +82,7 @@ def make_bot(
         decision_log=DecisionLogger(mode="test"),
         state_store=StateStore(tmp_path / "state.json", clock, mode="test"),
         store=None,
+        ledger=EventLedger(tmp_path / "ledger.jsonl"),
     )
     instance.filters = {"BTCUSDT": filters_for("BTCUSDT"), "ETHUSDT": filters_for("ETHUSDT")}
     if con_guida and instance.lease is not None:
@@ -1081,3 +1084,87 @@ class TestRaffreddamentoDeiSegnali:
         assert await bot.evaluate_symbol("ETHUSDT") is not None, (
             "il raffreddamento di un simbolo non deve bloccarne un altro"
         )
+
+
+class TestPreriscaldamento:
+    """Con candele da un minuto e 240 barre di warmup, un bot che parte a
+    freddo non decide niente per quattro ore: dalla finestra del pannello
+    sembra rotto, e non e' rotto, sta aspettando. Lo storico scaricato al
+    passo 2 della preparazione e' gia' sul disco: leggerlo all'avvio
+    toglie l'attesa senza inventare un solo dato."""
+
+    def _store_con_storico(self, tmp_path: Path, barre: int) -> ParquetStore:
+        store = ParquetStore(tmp_path / "data_store")
+        prezzo = D("60000")
+        candele = []
+        for i in range(barre):
+            prezzo = (prezzo * D("1.0003")).quantize(D("0.01"))
+            candele.append(
+                Candle(
+                    symbol="BTCUSDT",
+                    open_time_ms=NOW - (barre - i) * MINUTE,
+                    close_time_ms=NOW - (barre - i - 1) * MINUTE - 1,
+                    open=prezzo,
+                    high=prezzo * D("1.001"),
+                    low=prezzo * D("0.999"),
+                    close=prezzo,
+                    volume=D("10"),
+                    quote_volume=prezzo * D("10"),
+                    trades=30,
+                    is_closed=True,
+                )
+            )
+        store.add_candles(candele)
+        store.flush()
+        return store
+
+    def test_lo_storico_sul_disco_toglie_lattesa(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        barre = config.features.warmup_bars + 5
+        bot = make_bot(config, tmp_path)
+        bot.store = self._store_con_storico(tmp_path, barre)
+        assert not bot.features.compute("BTCUSDT", NOW).is_complete
+
+        caricate = bot.preriscalda()
+
+        assert caricate["BTCUSDT"] >= config.features.warmup_bars
+        assert bot.features.compute("BTCUSDT", NOW).is_complete, (
+            "dopo il preriscaldamento il bot puo' gia' decidere"
+        )
+        assert bot.last_prices["BTCUSDT"] > 0
+
+    def test_senza_storico_non_si_inventa_niente(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        bot = make_bot(config, tmp_path)
+        bot.store = ParquetStore(tmp_path / "vuoto")
+        assert bot.preriscalda() == {}
+        assert not bot.features.compute("BTCUSDT", NOW).is_complete
+
+    def test_le_candele_troppo_vecchie_non_servono(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        """Riempire il warmup con la settimana scorsa darebbe feature
+        calcolate su un mercato che non c'e' piu'. Meglio aspettare."""
+        barre = config.features.warmup_bars + 5
+        store = ParquetStore(tmp_path / "data_store")
+        prezzo = D("60000")
+        vecchio = NOW - 30 * 86_400_000
+        candele = [
+            Candle(
+                symbol="BTCUSDT",
+                open_time_ms=vecchio + i * MINUTE,
+                close_time_ms=vecchio + (i + 1) * MINUTE - 1,
+                open=prezzo, high=prezzo, low=prezzo, close=prezzo,
+                volume=D("10"), quote_volume=prezzo * D("10"),
+                trades=30, is_closed=True,
+            )
+            for i in range(barre)
+        ]
+        store.add_candles(candele)
+        store.flush()
+
+        bot = make_bot(config, tmp_path)
+        bot.store = store
+        assert bot.preriscalda() == {}

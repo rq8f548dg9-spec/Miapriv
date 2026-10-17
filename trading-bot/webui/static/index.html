@@ -283,10 +283,34 @@
   </div>
 </section>
 
+<!-- ───────────────── cosa sta succedendo ───────────────── -->
+<section class="card" id="card-attivita">
+  <h2>Cosa sta succedendo<button type="button" class="info" data-info="attivita" aria-expanded="false" aria-label="Che cos'è: cosa sta facendo il bot adesso">i</button></h2>
+  <p id="attivita-stato" style="font-weight:600;margin:.2rem 0"></p>
+  <p class="small muted" id="attivita-spiegazione"></p>
+  <div class="scroll" id="attivita-simboli"></div>
+</section>
+
 <!-- ───────────────── situazione ───────────────── -->
 <section class="card">
   <h2>Situazione<button type="button" class="info" data-info="situazione" aria-expanded="false" aria-label="Che cos'è: che cosa vedi qui">i</button></h2>
   <div class="tiles" id="tiles"></div>
+</section>
+
+<!-- ───────────────── capitale ───────────────── -->
+<section class="card" id="card-capitale">
+  <h2>Capitale in gestione<button type="button" class="info" data-info="capitale" aria-expanded="false" aria-label="Che cos'è: capitale in gestione">i</button></h2>
+  <div class="tiles" id="capitale-tiles"></div>
+  <p class="small muted" id="capitale-avvertenza"></p>
+  <div class="toolbar">
+    <select id="mov-tipo">
+      <option value="conferimento">Ho versato</option>
+      <option value="prelievo">Ho prelevato</option>
+    </select>
+    <input id="mov-importo" type="number" step="0.01" min="0" placeholder="importo" style="max-width:10rem">
+    <button id="btn-movimento" class="small">Registra il movimento</button>
+    <span class="small muted" id="msg-movimento"></span>
+  </div>
 </section>
 
 <!-- ───────────────── equity ───────────────── -->
@@ -295,7 +319,7 @@
     <h2 style="margin:0">Andamento del capitale<button type="button" class="info" data-info="grafico" aria-expanded="false" aria-label="Che cos'è: andamento del capitale">i</button></h2>
     <button id="btn-table" class="small">Mostra i dati</button>
   </div>
-  <p class="small muted" id="chart-note">Il grafico si riempie mentre il bot gira.</p>
+  <p class="small muted" id="chart-note">Il grafico si muove quando un'operazione si chiude: finché il bot non compra e rivende, la linea resta ferma anche se sta lavorando. Il riquadro «Cosa sta succedendo» qui sopra dice a che punto è.</p>
   <div class="chart-wrap">
     <svg id="chart" class="hidden" viewBox="0 0 720 240" role="img"
          aria-label="Andamento del capitale nel tempo"></svg>
@@ -378,7 +402,11 @@ const INFO = {
     testo: `È un <strong>tetto</strong>, non una stima. Il conto di prova di Binance
       ha migliaia di USDT finti: se qui scrivi 200, il bot ragiona come se ne avesse
       200 e basta. Le posizioni restano in proporzione e gli stop scattano alle stesse
-      cifre che avresti sul conto vero.`,
+      cifre che avresti sul conto vero.<br><br>
+      Questo numero vale al <strong>primo avvio</strong>, quando apre il registro del
+      capitale. Dopo, la base è quella del riquadro «Capitale in gestione», che
+      cresce con i guadagni: cambiare qui non riscrive la storia del conto, per
+      aggiungere o togliere denaro si registra un movimento.`,
     esempio: 'Tienilo uguale alla cifra che useresti davvero.',
   },
   ordine_target: {
@@ -447,6 +475,28 @@ const INFO = {
       (commissioni e slippage, circa 20–25 bps per un giro completo) di almeno questo
       margine, <strong>altrimenti il bot sta fermo</strong>.`,
     esempio: 'È il motivo più frequente di rifiuto: significa che il segnale non paga le fee.',
+  },
+  capitale: {
+    titolo: 'Capitale in gestione',
+    testo: `Tre numeri tenuti separati apposta. <strong>Versato da te</strong> è il
+      denaro entrato da fuori; <strong>guadagnato dal bot</strong> è il risultato delle
+      operazioni, al netto delle commissioni; <strong>in gestione</strong> è quello che
+      c'è adesso, ed è la base su cui il bot dimensiona. Cento che diventano
+      centotrenta restano centotrenta anche dopo un riavvio: il guadagno si reinveste
+      da solo. I <strong>limiti di rischio non si alzano mai da soli</strong>: restano
+      quelli che hai messo nelle impostazioni.`,
+    esempio: 'Registrare un movimento è contabilità: il bonifico lo fai tu sull\'exchange, il bot non ha il permesso di prelievo.',
+  },
+  attivita: {
+    titolo: 'Cosa sta facendo il bot adesso',
+    testo: `Prima di poter decidere, il bot ha bisogno di un certo numero di
+      <strong>candele chiuse</strong> per ogni coppia: sono la memoria con cui calcola
+      volatilità, medie e slancio. Con candele da un minuto, riempirle dal vivo richiede
+      ore; lo storico scaricato al passo 2 le fornisce subito, all'avvio.
+      Quando i dati bastano, il bot valuta a ogni giro e <strong>quasi sempre rifiuta</strong>:
+      apre solo se il vantaggio stimato supera commissioni e spread. Un bot fermo che
+      spiega perché non è un bot rotto.`,
+    esempio: 'Se l\'ultimo dato risale a più di due minuti fa, il flusso è caduto e il bot sta già riprovando.',
   },
   situazione: {
     titolo: 'Che cosa vedi qui',
@@ -626,6 +676,64 @@ function tile(label, value, sub, cls) {
     <div class="sub">${sub || ''}</div></div>`;
 }
 
+async function refreshCapitale() {
+  try {
+    const c = await api('/api/capitale');
+    $('capitale-tiles').innerHTML = [
+      tile('In gestione', fmt(c.in_gestione) + ' ' + c.valuta,
+           'liquido ' + fmt(c.liquido) + ' ' + c.valuta),
+      tile('Versato da te', fmt(c.conferito) + ' ' + c.valuta,
+           'prelevato ' + fmt(c.prelevato) + ' ' + c.valuta),
+      tile('Guadagnato dal bot', (Number(c.guadagno_netto) >= 0 ? '+' : '')
+           + fmt(c.guadagno_netto) + ' ' + c.valuta,
+           'commissioni ' + fmt(c.commissioni, 4),
+           Number(c.guadagno_netto) > 0 ? 'pos' : (Number(c.guadagno_netto) < 0 ? 'neg' : '')),
+    ].join('');
+    $('capitale-avvertenza').textContent = c.avvertenza || '';
+  } catch (_) { /* il prossimo giro riprova */ }
+}
+
+async function registraMovimento() {
+  const tipo = $('mov-tipo').value;
+  const importo = $('mov-importo').value;
+  if (!importo || Number(importo) <= 0) {
+    note('msg-movimento', 'Scrivi un importo maggiore di zero.', 'err');
+    return;
+  }
+  try {
+    await post('/api/capitale/movimento', { tipo: tipo, importo: String(importo) });
+    $('mov-importo').value = '';
+    note('msg-movimento', 'Movimento registrato.', 'ok');
+    await refreshCapitale();
+  } catch (error) {
+    note('msg-movimento', error.message, 'err');
+  }
+}
+
+function renderAttivita(s) {
+  const a = s.attivita;
+  if (!a) return;
+  $('attivita-stato').textContent = a.stato.charAt(0).toUpperCase() + a.stato.slice(1) + '.';
+  let spiega = a.spiegazione || '';
+  if (a.eta_dato_s !== null && a.eta_dato_s !== undefined) {
+    spiega += ' Ultimo dato di mercato ' + Math.round(a.eta_dato_s) + ' secondi fa.';
+  }
+  if (a.ultimo_motivo) {
+    spiega += ' Ultima decisione: ' + a.ultimo_motivo + '.';
+  }
+  $('attivita-spiegazione').textContent = spiega;
+  const righe = (a.simboli || []).map(function (x) {
+    const quota = Math.min(100, Math.round(100 * x.barre / Math.max(1, x.barre_necessarie)));
+    return '<tr><td>' + esc(x.simbolo) + '</td>'
+      + '<td>' + x.barre + ' / ' + x.barre_necessarie + ' candele (' + quota + '%)</td>'
+      + '<td>' + (x.pronto ? 'pronto' : 'in raccolta') + '</td>'
+      + '<td>' + (x.ultimo_prezzo ? fmt(x.ultimo_prezzo) : '—') + '</td></tr>';
+  }).join('');
+  $('attivita-simboli').innerHTML = righe
+    ? '<table><thead><tr><th>Coppia</th><th>Dati per decidere</th><th>Stato</th><th>Ultimo prezzo</th></tr></thead><tbody>' + righe + '</tbody></table>'
+    : '';
+}
+
 function renderTiles(s) {
   const pnl = Number(s.pnl_realizzato) + Number(s.pnl_non_realizzato);
   const killLabel = s.killswitch.scattato
@@ -686,7 +794,9 @@ function renderChart(points) {
     svg.classList.add('hidden');
     empty.classList.remove('hidden');
     note.textContent = state && state.in_esecuzione
-      ? 'Raccolta dei primi dati in corso…'
+      ? 'La linea si muove quando un\'operazione si chiude. Finché il bot non compra '
+        + 'e rivende resta ferma, anche se sta lavorando: il riquadro «Cosa sta '
+        + 'succedendo» dice a che punto è.'
       : 'Il grafico si riempie mentre il bot gira.';
     return;
   }
@@ -1046,6 +1156,7 @@ async function refresh() {
     state = await api('/api/stato');
     showError(state.ultimo_errore || '');
     renderHeader(state);
+    renderAttivita(state);
     renderTiles(state);
     renderPositions(state);
     if (state.dati) {
@@ -1076,9 +1187,12 @@ async function refreshSlow() {
   renderChart([]);
   renderDecisions();
   await refresh();
+  await refreshCapitale();
   await refreshSlow();
+  $('btn-movimento').addEventListener('click', registraMovimento);
   setInterval(refresh, 2000);
   setInterval(refreshSlow, 5000);
+  setInterval(refreshCapitale, 10000);
 })();
 </script>
 </body>
