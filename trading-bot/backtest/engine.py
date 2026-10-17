@@ -22,6 +22,7 @@ misurerebbe un sistema che non esiste.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -147,8 +148,12 @@ class BacktestEngine:
         clock = SimulatedClock(ordered[0].open_time_ms)
         portfolio = Portfolio(initial)
         features = FeatureEngine(self.config.features)
-        pending: dict[str, Order] = {}
+        # Ordine in volo e istante dal quale puo' essere eseguito: con una
+        # latenza piu' lunga di una barra, l'esecuzione non e' alla barra
+        # successiva ma a quella in cui l'ordine sarebbe davvero arrivato.
+        pending: dict[str, tuple[Order, TimestampMs]] = {}
         ultimi_prezzi: dict[str, Decimal] = {}
+        latenza_ms = self.costs.config.latency_ms
 
         def esposizione_in_volo() -> dict[str, Decimal]:
             """Ordini decisi e non ancora eseguiti: esposizione gia' impegnata.
@@ -162,7 +167,7 @@ class BacktestEngine:
             return {
                 symbol: order.quantity
                 * Decimal(str(order.metadata.get("reference_price", "0")))
-                for symbol, order in pending.items()
+                for symbol, (order, _) in pending.items()
             }
 
         risk = RiskManager.from_config(
@@ -191,7 +196,10 @@ class BacktestEngine:
 
             if kind == 0:
                 # --- apertura barra: si eseguono gli ordini decisi alla barra precedente
-                order = pending.pop(candle.symbol, None)
+                in_volo = pending.get(candle.symbol)
+                order = None
+                if in_volo is not None and clock.now_ms() >= in_volo[1]:
+                    order = pending.pop(candle.symbol)[0]
                 if order is not None:
                     fill, motivo = self.try_execute(
                         order, candle, portfolio, clock.now_ms()
@@ -217,7 +225,9 @@ class BacktestEngine:
 
             bar_return = features.bar_return(candle.symbol)
             if bar_return is not None:
-                risk.limits.correlations.update(candle.symbol, bar_return)
+                risk.limits.correlations.update(
+                    candle.symbol, bar_return, candle.close_time_ms
+                )
 
             equity_curve.append((clock.now_ms(), portfolio.equity))
             ultimi_prezzi[candle.symbol] = candle.close
@@ -241,7 +251,9 @@ class BacktestEngine:
                     # Alla barra successiva, come ogni altro ordine: anche la
                     # chiusura d'emergenza paga lo scarto fra decisione ed
                     # esecuzione.
-                    pending.setdefault(chiusura.symbol, chiusura)
+                    pending.setdefault(
+                        chiusura.symbol, (chiusura, clock.now_ms() + latenza_ms)
+                    )
                 if not chiusure and not portfolio.snapshot(clock.now_ms()).open_positions:
                     risk.killswitch.mark_flattened()
 
@@ -278,7 +290,7 @@ class BacktestEngine:
                 ),
             )
             if decision.approved and decision.order is not None:
-                pending[candle.symbol] = decision.order
+                pending[candle.symbol] = (decision.order, clock.now_ms() + latenza_ms)
                 submitted += 1
             else:
                 rejected += 1
@@ -317,6 +329,12 @@ class BacktestEngine:
         pronti non succede. Qui si ricontrolla con il prezzo vero: fondi,
         posseduto e filtri di coppia.
         """
+        if self.assume_maker and self._ordine_limite_rifiutato(order):
+            return None, (
+                "ordine limite non eseguito: con l'ipotesi maker una quota "
+                f"di {self.costs.config.limit_order_reject_rate:.0%} degli "
+                "ordini non trova esecuzione al prezzo richiesto"
+            )
         fill = self._execute(order, candle, now_ms)
         filters = self.filters.get(order.symbol) or default_filters(
             order.symbol, fetched_at_ms=now_ms
@@ -339,6 +357,20 @@ class BacktestEngine:
         if problemi:
             return None, "; ".join(problemi)
         return fill, ""
+
+    def _ordine_limite_rifiutato(self, order: Order) -> bool:
+        """Vero se questo ordine limite non viene eseguito.
+
+        La scelta e' deterministica, derivata dall'identificativo
+        dell'ordine: due esecuzioni dello stesso backtest devono dare lo
+        stesso risultato, altrimenti non si puo' confrontare niente.
+        """
+        quota = self.costs.config.limit_order_reject_rate
+        if quota <= 0:
+            return False
+        digest = hashlib.sha256(order.client_order_id.encode("utf-8")).digest()
+        estratto = int.from_bytes(digest[:8], "big") / float(1 << 64)
+        return estratto < quota
 
     def _execute(self, order: Order, candle: Candle, now_ms: TimestampMs) -> Fill:
         """Esegue un ordine all'apertura della barra, con costi applicati.

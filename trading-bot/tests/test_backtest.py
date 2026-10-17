@@ -342,6 +342,74 @@ class TestEsecuzionePossibile:
             assert equity >= 0, "il conto simulato e' andato sotto zero"
 
 
+def _con_costi(config: AppConfig, **modifiche: object) -> AppConfig:
+    """Copia della configurazione con il modello dei costi modificato."""
+    backtest = config.backtest
+    assert backtest is not None, "config.yaml ha sempre la sezione backtest"
+    costi = backtest.costs.model_copy(update=modifiche)
+    return config.model_copy(
+        update={"backtest": backtest.model_copy(update={"costs": costi})}
+    )
+
+
+class TestLatenzaERifiuti:
+    """A25: cambiare la latenza da 150 ms a sedici minuti non cambiava
+    niente, e la quota di rifiuto degli ordini limite non esisteva proprio.
+    Due parametri che promettevano un modello che non c'era."""
+
+    def test_una_latenza_oltre_la_barra_ritarda_lesecuzione(
+        self, config: AppConfig
+    ) -> None:
+        candele = synthetic_candles(320)
+        veloce = BacktestEngine(config, SoloAcquisti()).run(candele)
+        lenta = _con_costi(config, latency_ms=600_000)
+        risultato = BacktestEngine(lenta, SoloAcquisti()).run(candele)
+
+        assert veloce.fills, "senza esecuzioni il confronto non dice niente"
+        assert risultato.fills, "con la latenza lunga non si esegue piu' niente"
+
+        def ritardo(risultato_backtest: object, indice: int = 0) -> int:
+            esecuzione = risultato_backtest.fills[indice]  # type: ignore[attr-defined]
+            decisione = next(
+                d
+                for d in risultato_backtest.decisions  # type: ignore[attr-defined]
+                if d.order is not None
+                and d.order.client_order_id == esecuzione.client_order_id
+            )
+            return int(esecuzione.ts_ms - decisione.ts_ms)
+
+        # candele da un minuto: senza latenza si esegue all'apertura dopo
+        assert ritardo(veloce) <= 60_001
+        # dieci minuti di latenza: dieci minuti dopo la decisione
+        assert ritardo(risultato) >= 600_000
+
+    def test_la_quota_di_rifiuto_si_applica_agli_ordini_limite(
+        self, config: AppConfig
+    ) -> None:
+        """Con l'ipotesi maker, una parte degli ordini non viene eseguita:
+        un ordine limite al prezzo migliore non e' garantito."""
+        candele = synthetic_candles(400)
+        engine = BacktestEngine(
+            _con_costi(config, limit_order_reject_rate=0.99),
+            SoloAcquisti(),
+            assume_maker=True,
+        )
+        risultato = engine.run(candele)
+        assert risultato.orders_submitted > 0
+        assert risultato.orders_unfilled > 0
+
+    def test_senza_ipotesi_maker_nessun_rifiuto_simulato(
+        self, config: AppConfig
+    ) -> None:
+        """Il motore invia ordini a mercato: la quota di rifiuto degli
+        ordini limite non li riguarda."""
+        a_mercato = _con_costi(config, limit_order_reject_rate=0.99)
+        risultato = BacktestEngine(a_mercato, SoloAcquisti()).run(
+            synthetic_candles(400)
+        )
+        assert risultato.orders_unfilled == 0
+
+
 class TestOrdiniInVoloNelBacktest:
     def test_non_apre_piu_posizioni_di_quante_ne_permette(
         self, config: AppConfig

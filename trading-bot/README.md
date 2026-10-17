@@ -184,6 +184,30 @@ rifiuti finiscono nel log, e sono i più istruttivi.
 latenza; il risk manager confronta l'edge **al netto** dei costi con una
 soglia minima.
 
+## Cosa il backtest non sa dirti
+
+Un backtest su candele non e' il bot che opera. Le differenze sono note e
+dichiarate, perche' scoprirle dopo aver investito e' il modo peggiore:
+
+- **niente order flow e niente book.** Lo storico contiene candele: le
+  feature di microstruttura (OFI, sbilanciamento del book, microprice), che
+  sono il cuore della baseline, nel backtest valgono zero. Un risultato
+  storico non valida quella parte della strategia, ne' in bene ne' in male.
+- **una decisione per barra, non una al secondo.** Dal vivo il bot valuta a
+  ogni dato che arriva; nel backtest alla chiusura di ogni candela. Con
+  candele da un minuto sono due regimi diversi.
+- **fill totali e immediati, al prezzo di apertura della barra successiva
+  (piu' la latenza dichiarata).** Non sono simulati i riempimenti parziali,
+  la profondita' del book, lo spread istante per istante. Sono simulati:
+  commissioni, slippage crescente con la size, latenza, e — con l'ipotesi
+  maker — la quota di ordini limite che non trova esecuzione.
+- **i dati storici della testnet durano poco** (circa dieci giorni) e i
+  prezzi della testnet non sono quelli del mercato vero.
+
+Quello che il backtest dice davvero e' se la strategia **regge i costi di
+transazione** su dati reali di prezzo. E' una domanda sola, ed e' quella che
+boccia la maggior parte delle idee.
+
 ## Quanto regge, in numeri
 
 Misurato con `scripts/benchmark.py` sul percorso reale (stessi componenti del

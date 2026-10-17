@@ -59,6 +59,12 @@ class CorrelationTracker:
 
     Con pochi campioni la stima e' rumorosa: sotto ``min_samples`` restituisce
     ``None`` e il chiamante rifiuta. In dubbio non si apre.
+
+    Ogni rendimento viaggia con l'istante della sua barra, e il confronto
+    avviene solo sugli istanti presenti in entrambe le serie. Allineare per
+    posizione sembra equivalente e non lo e': basta una barra persa su un
+    simbolo (un feed che salta, un simbolo abilitato dopo) perche' le due
+    code scivolino e la "correlazione" confronti momenti diversi.
     """
 
     def __init__(self, lookback: int, min_samples: int) -> None:
@@ -66,12 +72,22 @@ class CorrelationTracker:
             raise ValueError("min_samples non puo' superare lookback")
         self._lookback = lookback
         self._min_samples = min_samples
-        self._returns: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=lookback))
+        self._returns: dict[str, deque[tuple[TimestampMs, float]]] = defaultdict(
+            lambda: deque(maxlen=lookback)
+        )
 
-    def update(self, symbol: str, bar_return: float) -> None:
-        """Registra un rendimento. Un valore non finito viene scartato."""
-        if math.isfinite(bar_return):
-            self._returns[symbol].append(bar_return)
+    def update(self, symbol: str, bar_return: float, ts_ms: TimestampMs) -> None:
+        """Registra un rendimento e l'istante della barra che lo ha prodotto.
+
+        Un valore non finito viene scartato, e cosi' una barra ripetuta: la
+        stessa chiusura consegnata due volte non e' una nuova osservazione.
+        """
+        if not math.isfinite(bar_return):
+            return
+        serie = self._returns[symbol]
+        if serie and serie[-1][0] >= ts_ms:
+            return
+        serie.append((ts_ms, bar_return))
 
     def samples(self, symbol: str) -> int:
         return len(self._returns.get(symbol, ()))
@@ -83,12 +99,13 @@ class CorrelationTracker:
         a_all, b_all = self._returns.get(left), self._returns.get(right)
         if a_all is None or b_all is None:
             return None
-        # le serie sono allineate a destra: si confronta la coda comune
-        size = min(len(a_all), len(b_all))
+        destra = dict(b_all)
+        comuni = [(ts, value) for ts, value in a_all if ts in destra]
+        size = len(comuni)
         if size < self._min_samples:
             return None
-        a = list(a_all)[-size:]
-        b = list(b_all)[-size:]
+        a = [value for _, value in comuni]
+        b = [destra[ts] for ts, _ in comuni]
 
         mean_a = sum(a) / size
         mean_b = sum(b) / size

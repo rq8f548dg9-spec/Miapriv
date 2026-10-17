@@ -505,42 +505,69 @@ class TestLimits:
         assert rates.count_last_hour("BTCUSDT", NOW) == 0
 
 
+class TestCorrelationAllineamento:
+    """Le due serie vanno confrontate barra per barra, non posizione per
+    posizione: con barre mancanti su un simbolo il confronto scivola e
+    mette in relazione istanti diversi."""
+
+    def test_barre_mancanti_non_spostano_il_confronto(self) -> None:
+        tracker = CorrelationTracker(lookback=100, min_samples=5)
+        valori = [0.01, -0.02, 0.03, -0.01, 0.02, 0.0, -0.03, 0.01]
+        for i, valore in enumerate(valori):
+            ts = NOW + i * 60_000
+            tracker.update("A", valore, ts)
+            # su B manca la barra numero 3: il feed l'ha persa
+            if i != 3:
+                tracker.update("B", valore, ts)
+        rho = tracker.correlation("A", "B")
+        assert rho is not None and rho == pytest.approx(1.0)
+
+    def test_senza_istanti_in_comune_non_e_stimabile(self) -> None:
+        tracker = CorrelationTracker(lookback=100, min_samples=3)
+        for i in range(10):
+            tracker.update("A", 0.01 * (-1) ** i, NOW + i * 60_000)
+            tracker.update("B", 0.01 * (-1) ** i, NOW + i * 60_000 + 30_000)
+        assert tracker.correlation("A", "B") is None
+
+
 class TestCorrelation:
     def test_serie_identiche_correlazione_uno(self) -> None:
         tracker = CorrelationTracker(lookback=100, min_samples=10)
-        for value in [0.01, -0.02, 0.03, -0.01, 0.02, 0.0, -0.03, 0.01, 0.02, -0.02]:
-            tracker.update("A", value)
-            tracker.update("B", value)
+        serie = [0.01, -0.02, 0.03, -0.01, 0.02, 0.0, -0.03, 0.01, 0.02, -0.02]
+        for i, value in enumerate(serie):
+            tracker.update("A", value, NOW + i * 60_000)
+            tracker.update("B", value, NOW + i * 60_000)
         rho = tracker.correlation("A", "B")
         assert rho is not None and rho == pytest.approx(1.0)
 
     def test_serie_opposte_correlazione_meno_uno(self) -> None:
         tracker = CorrelationTracker(lookback=100, min_samples=10)
-        for value in [0.01, -0.02, 0.03, -0.01, 0.02, 0.005, -0.03, 0.01, 0.02, -0.02]:
-            tracker.update("A", value)
-            tracker.update("B", -value)
+        serie = [0.01, -0.02, 0.03, -0.01, 0.02, 0.005, -0.03, 0.01, 0.02, -0.02]
+        for i, value in enumerate(serie):
+            tracker.update("A", value, NOW + i * 60_000)
+            tracker.update("B", -value, NOW + i * 60_000)
         rho = tracker.correlation("A", "B")
         assert rho is not None and rho == pytest.approx(-1.0)
 
     def test_pochi_campioni_non_stimabile(self) -> None:
         tracker = CorrelationTracker(lookback=100, min_samples=30)
-        for value in (0.01, 0.02, -0.01):
-            tracker.update("A", value)
-            tracker.update("B", value)
+        for i, value in enumerate((0.01, 0.02, -0.01)):
+            tracker.update("A", value, NOW + i * 60_000)
+            tracker.update("B", value, NOW + i * 60_000)
         assert tracker.correlation("A", "B") is None
 
     def test_serie_costante_non_stimabile(self) -> None:
         """Varianza nulla: la correlazione e' indefinita, non zero."""
         tracker = CorrelationTracker(lookback=100, min_samples=5)
-        for _ in range(10):
-            tracker.update("A", 0.0)
-            tracker.update("B", 0.01)
+        for i in range(10):
+            tracker.update("A", 0.0, NOW + i * 60_000)
+            tracker.update("B", 0.01, NOW + i * 60_000)
         assert tracker.correlation("A", "B") is None
 
     def test_valori_non_finiti_scartati(self) -> None:
         tracker = CorrelationTracker(lookback=100, min_samples=5)
-        tracker.update("A", float("nan"))
-        tracker.update("A", float("inf"))
+        tracker.update("A", float("nan"), NOW)
+        tracker.update("A", float("inf"), NOW + 60_000)
         assert tracker.samples("A") == 0
 
     def test_posizione_molto_correlata_rifiutata(self, config: AppConfig) -> None:
@@ -551,8 +578,8 @@ class TestCorrelation:
         )
         for i in range(config.risk.limits.min_correlation_samples + 5):
             value = 0.01 if i % 2 == 0 else -0.01
-            tracker.update("BTCUSDT", value)
-            tracker.update("ETHUSDT", value * 1.05)
+            tracker.update("BTCUSDT", value, NOW + i * 60_000)
+            tracker.update("ETHUSDT", value * 1.05, NOW + i * 60_000)
         checker = LimitChecker(
             config.risk.limits,
             max_position_quote={s.symbol: s.max_position_quote for s in config.enabled_symbols},

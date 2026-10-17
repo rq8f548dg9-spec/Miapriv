@@ -298,7 +298,9 @@ class TradingBot:
         self.last_prices[candle.symbol] = candle.close
         bar_return = self.features.bar_return(candle.symbol)
         if bar_return is not None:
-            self.risk.limits.correlations.update(candle.symbol, bar_return)
+            self.risk.limits.correlations.update(
+                candle.symbol, bar_return, candle.close_time_ms
+            )
 
     def on_depth(self, update: DepthUpdate) -> None:
         book = self.books.get(update.symbol)

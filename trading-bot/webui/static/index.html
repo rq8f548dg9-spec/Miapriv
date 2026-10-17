@@ -488,7 +488,11 @@ const INFO = {
     titolo: 'La prova sullo storico',
     testo: `Rigioca la strategia sui dati scaricati applicando commissioni, slippage
       e ritardo di esecuzione, poi dice se nonostante tutto questo resta in guadagno.
-      È il <strong>cancello</strong>: se non lo supera, non ha senso farla operare.`,
+      È il <strong>cancello</strong>: se non lo supera, non ha senso farla operare.
+      Attenzione a cosa <strong>non</strong> può dirti: lo storico contiene candele,
+      non il flusso degli scambi né il book, quindi la parte di strategia che legge
+      la microstruttura qui non viene provata. Un esito positivo significa
+      «regge i costi sui prezzi passati», non «guadagnerà».`,
     esempio: 'Decide alla chiusura di una candela ed esegue all\'apertura della successiva, mai prima.',
   },
 };
