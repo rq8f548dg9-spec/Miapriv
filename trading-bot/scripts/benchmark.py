@@ -1,6 +1,6 @@
 """Misura la capacita' del bot: quanti eventi al secondo regge e quanto consuma.
 
-    python scripts/benchmark.py
+    python -m scripts.benchmark
 
 Serve a rispondere a una domanda concreta: questo bot sta dietro al mercato?
 Un bot che impiega piu' di un secondo a decidere su un flusso che produce

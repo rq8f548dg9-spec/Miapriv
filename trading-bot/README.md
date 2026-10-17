@@ -79,12 +79,12 @@ pytest && mypy . && ruff check .      # 476 test
 
 cp .env.example .env                   # poi incolla le chiavi testnet
 python -m main --check                 # valida la configurazione
-python scripts/fetch_history.py --days 30
+python -m scripts.fetch_history --days 30
 python -m main --backtest              # esce con codice 1 se non regge i costi
 python -m main                         # avvia il bot sulla testnet
 python -m main --ui                    # ...oppure apri il pannello
 
-python scripts/benchmark.py            # quanti eventi al secondo regge
+python -m scripts.benchmark            # quanti eventi al secondo regge
 ```
 
 Mentre gira, le decisioni si leggono così:
@@ -215,13 +215,13 @@ live), su una macchina da container:
 
 | Cosa | Capacità |
 |---|---|
-| Candele nel feature engine | ~250.000 al secondo |
-| Trade nell'order flow | ~780.000 al secondo |
-| Vettore di feature, mercato calmo | ~12.700 al secondo |
+| Candele nel feature engine | ~240.000 al secondo |
+| Trade nell'order flow | ~1.200.000 al secondo |
+| Vettore di feature, mercato calmo | ~11.900 al secondo |
 | Vettore di feature, order flow denso (~3.000 trade in finestra) | ~1.400 al secondo |
-| **Ciclo completo** (feature + segnale + tutti i controlli di rischio) | **~310 decisioni al secondo** |
-| Backtest | ~7.000 barre al secondo, cioè un anno di storico in ~75 secondi |
-| Memoria | ~90 MB di picco |
+| **Ciclo completo** (feature + segnale + tutti i controlli di rischio) | **~330 decisioni al secondo** |
+| Backtest | ~6.500 barre al secondo, cioè un anno di storico in ~80 secondi |
+| Memoria | ~75 MB di picco |
 
 Il flusso di Binance su pochi simboli produce 10–100 eventi al secondo: il
 margine è di 3–30 volte. Il costo dominante è la finestra dell'order flow, che

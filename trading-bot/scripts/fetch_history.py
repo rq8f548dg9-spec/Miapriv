@@ -1,7 +1,7 @@
 """Scarica le candele storiche da Binance e le salva nello store Parquet.
 
-    python scripts/fetch_history.py --days 30
-    python scripts/fetch_history.py --symbols BTCUSDT --days 90
+    python -m scripts.fetch_history --days 30
+    python -m scripts.fetch_history --symbols BTCUSDT --days 90
 
 Senza dati storici il backtest non ha niente da leggere. Lo script usa
 l'endpoint pubblico ``/api/v3/klines``, che non richiede autenticazione, e
