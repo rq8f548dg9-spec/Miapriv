@@ -56,6 +56,7 @@ def client_order_id(
     intent: str = "",
     prefix: str = "tb",
     bucket_ms: int = 1_000,
+    sequence: int = 0,
 ) -> str:
     """Id deterministico per un ordine.
 
@@ -66,11 +67,26 @@ def client_order_id(
     cui il riavvio ricalcoli la stessa decisione con un timestamp spostato di
     pochi millisecondi. Un bucket troppo largo accorperebbe decisioni
     distinte, quindi resta a un secondo.
+
+    ``sequence`` distingue due decisioni che nello stesso secondo hanno lo
+    stesso contenuto. Non va scelta a caso: la assegna il registro
+    (``OrderRegistry.unique_client_order_id``) guardando quali ordini sono
+    gia' conclusi, cosi' resta deterministica anche dopo un riavvio.
     """
     bucket = decision_ts_ms // max(1, bucket_ms)
-    payload = "|".join(
-        (symbol.upper(), side.value, format(quantity.normalize(), "f"), intent, str(bucket))
-    )
+    parti = [
+        symbol.upper(),
+        side.value,
+        format(quantity.normalize(), "f"),
+        intent,
+        str(bucket),
+    ]
+    # La sequenza entra nell'impronta solo quando serve: con sequence=0 l'id
+    # resta quello di sempre, e un ordine registrato prima di questa
+    # modifica si ricalcola identico invece di essere reinviato.
+    if sequence:
+        parti.append(f"#{sequence}")
+    payload = "|".join(parti)
     digest = hashlib.sha256(payload.encode("utf-8")).digest()
     fingerprint = _base36(int.from_bytes(digest[:16], "big"), 20)
     order_id = f"{prefix}-{fingerprint}"
@@ -177,6 +193,51 @@ class OrderRegistry:
             for order_id, record in self._records.items()
             if not OrderStatus(str(record["status"])).is_terminal
         ]
+
+    def unique_client_order_id(
+        self,
+        *,
+        symbol: str,
+        side: Side,
+        quantity: Decimal,
+        decision_ts_ms: TimestampMs,
+        intent: str = "",
+        max_sequence: int = 1_000,
+    ) -> str:
+        """Id per questa decisione, distinto da quelli gia' conclusi uguali.
+
+        Due decisioni diverse con lo stesso contenuto nello stesso secondo
+        producevano lo stesso id: la seconda veniva rifiutata dal registro e
+        andava persa senza che nessuno se ne accorgesse. Succede davvero su
+        una chiusura ritentata subito dopo un rifiuto.
+
+        La regola e' asimmetrica, apposta:
+
+        * se l'id calcolato corrisponde a un ordine ancora aperto, si
+          restituisce quello. E' lo stesso ordine ricalcolato (tipicamente
+          dopo un crash) e il registro deve bloccarlo: potrebbe essere
+          partito davvero;
+        * se corrisponde a un ordine gia' concluso, la decisione e' nuova e
+          prende l'identificativo successivo.
+        """
+        for sequence in range(max_sequence):
+            candidato = client_order_id(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                decision_ts_ms=decision_ts_ms,
+                intent=intent,
+                sequence=sequence,
+            )
+            record = self._records.get(candidato)
+            if record is None:
+                return candidato
+            if not OrderStatus(str(record["status"])).is_terminal:
+                return candidato
+        raise RuntimeError(
+            f"{max_sequence} ordini conclusi identici su {symbol} nello stesso "
+            "secondo: il registro non e' in grado di distinguerne un altro"
+        )
 
     def pending_quantities(self, side: Side | None = None) -> dict[str, Decimal]:
         """Quantita' ancora in volo per simbolo, al netto di quanto gia' eseguito.

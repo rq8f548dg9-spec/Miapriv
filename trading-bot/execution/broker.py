@@ -178,6 +178,21 @@ class PaperBroker(Broker):
     def set_price(self, symbol: str, price: Decimal) -> None:
         self.prices[symbol] = price
 
+    async def depth_snapshot(self, symbol: str, limit: int = 100) -> DepthSnapshot | None:
+        """Book minimo attorno al prezzo corrente.
+
+        Il broker di carta non ha un book vero, ma restituire ``None``
+        significherebbe che all'avvio il bot non sa valutare le posizioni che
+        trova sul conto, e in carta non partirebbe affatto. Meglio un book di
+        un livello costruito sul prezzo noto, dichiarato per quello che e'.
+        """
+        price = self.prices.get(symbol)
+        if price is None:
+            return None
+        meta_spread = price * Decimal("0.0001")
+        quantita = Decimal(1)
+        return (0, ((price - meta_spread, quantita),), ((price + meta_spread, quantita),))
+
     async def exchange_filters(self) -> dict[str, SymbolFilters]:
         """Filtri con l'istante di lettura aggiornato.
 

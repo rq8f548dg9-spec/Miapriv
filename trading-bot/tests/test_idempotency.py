@@ -237,3 +237,72 @@ class TestPaperBrokerIdempotency:
 
         with pytest.raises(BrokerError, match="nessun prezzo"):
             await broker.submit(make_order(symbol="ETHUSDT"))
+
+
+class TestDecisioniNelloStessoSecondo:
+    """L'id deriva dal contenuto della decisione piu' il secondo in cui e'
+    stata presa. Due decisioni diverse ma identiche nel contenuto, nello
+    stesso secondo, producevano lo stesso id: la seconda veniva bloccata dal
+    registro e andava persa in silenzio."""
+
+    def _ordine(self, order_id: str) -> Order:
+        return Order(
+            client_order_id=order_id,
+            symbol="BTCUSDT",
+            side=Side.BUY,
+            order_type=OrderType.MARKET,
+            quantity=D("0.001"),
+            created_at_ms=NOW,
+        )
+
+    def test_dopo_un_ordine_concluso_la_stessa_decisione_ottiene_un_id_nuovo(
+        self,
+    ) -> None:
+        registry = OrderRegistry()
+        primo = registry.unique_client_order_id(
+            symbol="BTCUSDT", side=Side.BUY, quantity=D("0.001"),
+            decision_ts_ms=NOW, intent="OPEN",
+        )
+        registry.reserve(self._ordine(primo))
+        registry.update(primo, status=OrderStatus.FILLED, filled_quantity=D("0.001"))
+
+        secondo = registry.unique_client_order_id(
+            symbol="BTCUSDT", side=Side.BUY, quantity=D("0.001"),
+            decision_ts_ms=NOW, intent="OPEN",
+        )
+        assert secondo != primo
+        registry.reserve(self._ordine(secondo))  # non deve sollevare
+
+    def test_un_ordine_ancora_in_volo_mantiene_il_suo_id(self) -> None:
+        """Il contrario sarebbe peggio del problema: ricalcolare la stessa
+        decisione dopo un crash deve dare lo stesso id, altrimenti si invia
+        due volte un ordine che forse e' gia' partito."""
+        registry = OrderRegistry()
+        primo = registry.unique_client_order_id(
+            symbol="BTCUSDT", side=Side.BUY, quantity=D("0.001"),
+            decision_ts_ms=NOW, intent="OPEN",
+        )
+        registry.reserve(self._ordine(primo))
+        registry.update(primo, status=OrderStatus.NEW)
+
+        ricalcolato = registry.unique_client_order_id(
+            symbol="BTCUSDT", side=Side.BUY, quantity=D("0.001"),
+            decision_ts_ms=NOW, intent="OPEN",
+        )
+        assert ricalcolato == primo
+        with pytest.raises(DuplicateOrderError):
+            registry.reserve(self._ordine(ricalcolato))
+
+    def test_la_prima_decisione_ha_lid_di_sempre(self) -> None:
+        """Retrocompatibilita': un ordine registrato prima di questa modifica
+        deve ricalcolarsi identico, o al riavvio verrebbe reinviato."""
+        registry = OrderRegistry()
+        atteso = client_order_id(
+            symbol="BTCUSDT", side=Side.BUY, quantity=D("0.001"),
+            decision_ts_ms=NOW, intent="OPEN",
+        )
+        assert registry.unique_client_order_id(
+            symbol="BTCUSDT", side=Side.BUY, quantity=D("0.001"),
+            decision_ts_ms=NOW, intent="OPEN",
+        ) == atteso
+

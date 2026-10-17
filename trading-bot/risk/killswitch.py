@@ -11,6 +11,7 @@ fermato, piu' in fretta.
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -20,6 +21,8 @@ from core.portfolio import PortfolioSnapshot
 from core.types import TimestampMs
 
 __all__ = ["KillSwitch", "KillSwitchEvent", "TriggerReason"]
+
+logger = logging.getLogger("trading_bot.killswitch")
 
 
 class TriggerReason(StrEnum):
@@ -83,6 +86,21 @@ class KillSwitch:
     def mark_flattened(self) -> None:
         self._flatten_pending = False
 
+    def require_flatten(self, reason: str) -> None:
+        """Rimette in coda la chiusura forzata.
+
+        Serve quando l'inventario reale smentisce lo stato salvato: il flag
+        puo' essere stato scritto prima del crash, o non essere stato
+        scritto affatto, ma se lo stop e' scattato e sul conto c'e' ancora
+        una posizione del bot la chiusura va ritentata. La verita'
+        sull'inventario sta sull'exchange, non nel file.
+        """
+        if not self.is_tripped:
+            return
+        if not self._flatten_pending:
+            logger.critical("chiusura forzata riarmata: %s", reason)
+        self._flatten_pending = True
+
     def allows_opening(self, now_ms: TimestampMs) -> bool:
         """Se si possono ancora aprire posizioni."""
         if not self.is_tripped:
@@ -90,18 +108,26 @@ class KillSwitch:
         return self._cooldown_expired(now_ms) and self.config.auto_resume
 
     def restore(
-        self, *, tripped_at_ms: TimestampMs | None, reason: str | None
+        self,
+        *,
+        tripped_at_ms: TimestampMs | None,
+        reason: str | None,
+        flatten_pending: bool = False,
     ) -> None:
         """Rimette il kill switch nello stato salvato prima di un riavvio.
 
         Senza questo, far ripartire il processo e' il modo piu' semplice per
         annullare uno stop: con il riavvio automatico del container succede
         da solo, proprio dopo che qualcosa e' andato storto.
+
+        ``flatten_pending`` si ripristina com'era: "la chiusura e' stata
+        tentata" non vuol dire "la posizione e' chiusa". Se il processo e'
+        morto mentre chiudeva, al riavvio deve ancora chiudere.
         """
         if tripped_at_ms is None:
             return
         self.tripped_at_ms = tripped_at_ms
-        self._flatten_pending = False  # la chiusura e' gia' stata tentata
+        self._flatten_pending = flatten_pending
         self.events.append(
             KillSwitchEvent(
                 TriggerReason.MANUAL,

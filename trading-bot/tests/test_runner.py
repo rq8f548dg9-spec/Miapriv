@@ -44,7 +44,9 @@ def bot(config: AppConfig, tmp_path: Path) -> TradingBot:
     return make_bot(config, tmp_path)
 
 
-def make_bot(config: AppConfig, tmp_path: Path) -> TradingBot:
+def make_bot(
+    config: AppConfig, tmp_path: Path, balances: dict[str, Decimal] | None = None
+) -> TradingBot:
     """Bot completo su broker di carta. Il cablaggio e' quello vero: i test
     che lo ricostruiscono a mano finiscono per provare se' stessi."""
     clock = SimulatedClock(NOW)
@@ -52,7 +54,7 @@ def make_bot(config: AppConfig, tmp_path: Path) -> TradingBot:
         clock=clock,
         costs=CostModel(CostsConfig()),
         filters={"BTCUSDT": filters_for("BTCUSDT"), "ETHUSDT": filters_for("ETHUSDT")},
-        balances={"USDT": D("200")},
+        balances=balances or {"USDT": D("200")},
     )
     broker.set_price("BTCUSDT", D("60000"))
     broker.set_price("ETHUSDT", D("3000"))
@@ -721,6 +723,63 @@ class TestChiusuraDiEmergenza:
 
         assert not bot.portfolio.positions["BTCUSDT"].is_flat
         assert bot.risk.killswitch.flatten_pending, "la chiusura non e' avvenuta"
+
+
+class TestChiusuraInterrotta:
+    """Il caso peggiore della chiusura d'emergenza: il processo muore mentre
+    sta chiudendo. Al riavvio nessuno sa piu' che c'era da chiudere, e la
+    posizione resta aperta su un bot che si crede al sicuro."""
+
+    @pytest.mark.asyncio
+    async def test_la_chiusura_rimasta_a_meta_riprende_dopo_il_riavvio(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        bot = make_bot(config, tmp_path)
+        feed_candles(bot, 300)
+        await bot.evaluate_symbol("BTCUSDT")
+        assert not bot.portfolio.positions["BTCUSDT"].is_flat
+
+        async def irraggiungibile(order: object) -> None:
+            raise RuntimeError("exchange irraggiungibile")
+
+        bot.submit = irraggiungibile  # type: ignore[method-assign]
+        bot.risk.killswitch.trip_manually("stop", bot.clock.now_ms())
+        await bot.check_killswitch()
+        assert bot.risk.killswitch.flatten_pending, "la chiusura non e' riuscita"
+        bot.snapshot_state(force=True)
+
+        # il processo muore qui e riparte
+        risorto = make_bot(config, tmp_path)
+        assert risorto.risk.killswitch.is_tripped
+        assert risorto.risk.killswitch.flatten_pending, (
+            "al riavvio nessuno sa piu' che c'era una posizione da chiudere"
+        )
+
+    @pytest.mark.asyncio
+    async def test_una_posizione_viva_riarma_la_chiusura_anche_senza_il_flag(
+        self, config: AppConfig, tmp_path: Path
+    ) -> None:
+        """Il crash puo' precedere il salvataggio del flag. La verita'
+        sull'inventario arriva dall'exchange: se lo stop e' scattato e sul
+        conto c'e' ancora una posizione del bot, si chiude."""
+        primo = make_bot(config, tmp_path)
+        primo.risk.killswitch.trip_manually("stop", primo.clock.now_ms())
+        primo.risk.killswitch.mark_flattened()  # il flag dice "fatto"
+        primo.reconciler.baseline_holdings = {"BTCUSDT": D("0"), "ETHUSDT": D("0")}
+        primo.snapshot_state(force=True)
+
+        # il conto reale pero' ha ancora la moneta comprata dal bot
+        risorto = make_bot(
+            config, tmp_path, balances={"USDT": D("140"), "BTC": D("0.001")}
+        )
+        risorto.broker.set_price("BTCUSDT", D("60000"))  # type: ignore[attr-defined]
+        risorto.broker.set_price("ETHUSDT", D("3000"))  # type: ignore[attr-defined]
+        await risorto.startup()
+
+        assert not risorto.portfolio.positions["BTCUSDT"].is_flat
+        assert risorto.risk.killswitch.flatten_pending, (
+            "stop scattato e posizione ancora aperta: la chiusura va ritentata"
+        )
 
 
 class TestFillRecuperati:

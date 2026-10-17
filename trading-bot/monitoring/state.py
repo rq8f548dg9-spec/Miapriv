@@ -35,7 +35,7 @@ logger = logging.getLogger("trading_bot.state")
 #: Versione 2: aggiunge le monete gia' presenti sul conto (baseline). Uno
 #: stato di versione 1 non la contiene, e senza di essa non si puo' dire
 #: quali monete appartengano al bot: viene scartato e si riparte dai saldi.
-STATE_VERSION = 4
+STATE_VERSION = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +58,9 @@ class BotState:
     #: Istante in cui il kill switch e' scattato: serve a far ripartire il
     #: periodo di attesa da dove era, non da capo.
     killswitch_tripped_at_ms: TimestampMs | None = None
+    #: Chiusura forzata ancora da completare. Si salva perche' un processo
+    #: che muore a meta' chiusura, al riavvio, deve sapere di doverla finire.
+    killswitch_flatten_pending: bool = False
     #: Monete presenti sul conto prima che il bot iniziasse: non sono sue.
     baseline_holdings: dict[str, str] = field(default_factory=dict)
     #: Stop e target delle posizioni aperte, per simbolo. Un riavvio che li
@@ -90,6 +93,13 @@ class BotState:
             raise ValueError("stato con timestamp kill switch non valido")
         if payload["killswitch_tripped"] != (tripped_at is not None):
             raise ValueError("stato kill switch incoerente con il timestamp")
+        flatten_pending = payload.get("killswitch_flatten_pending", False)
+        if type(flatten_pending) is not bool:
+            raise ValueError("stato chiusura forzata non booleano")
+        if flatten_pending and not payload["killswitch_tripped"]:
+            raise ValueError(
+                "stato con chiusura forzata pendente senza kill switch scattato"
+            )
         extra = payload.get("extra", {})
         if not isinstance(extra, dict):
             raise ValueError("stato extra non valido")
@@ -123,6 +133,7 @@ class BotState:
                 if payload.get("killswitch_tripped_at_ms") is not None
                 else None
             ),
+            killswitch_flatten_pending=flatten_pending,
             baseline_holdings={
                 str(k): str(v) for k, v in dict(payload.get("baseline_holdings", {})).items()
             },
@@ -177,6 +188,7 @@ class StateStore:
             killswitch_tripped=killswitch.is_tripped,
             killswitch_reason=last_event.describe() if last_event else None,
             killswitch_tripped_at_ms=killswitch.tripped_at_ms,
+            killswitch_flatten_pending=killswitch.flatten_pending,
             baseline_holdings={
                 symbol: str(quantity)
                 for symbol, quantity in (baseline_holdings or {}).items()

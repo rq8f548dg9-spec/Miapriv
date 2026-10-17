@@ -154,7 +154,15 @@ class Portfolio:
     #: dalla riconciliazione di un ordine parziale ancora aperto): applicarlo
     #: due volte raddoppierebbe la posizione sui libri senza che nulla sia
     #: cambiato sull'exchange.
-    _applied_fills: dict[str, None] = field(default_factory=dict, repr=False)
+    _applied_fills: dict[str, tuple[str, int | None]] = field(
+        default_factory=dict, repr=False
+    )
+    #: Per simbolo, l'identificativo di trade oltre il quale tutto e' gia'
+    #: stato contabilizzato. Si alza quando una chiave esce dalla finestra:
+    #: senza, un fill antico ripescato dalla riconciliazione rientrerebbe.
+    _fill_frontier: dict[str, int] = field(default_factory=dict, repr=False)
+    #: Quante esecuzioni recenti ricordare per identificativo completo.
+    max_fill_keys: int = MAX_FILL_KEYS
 
     def __post_init__(self) -> None:
         if self.initial_cash <= 0:
@@ -173,10 +181,28 @@ class Portfolio:
         """
         return f"{fill.symbol}|{fill.trade_id}" if fill.trade_id else None
 
+    @staticmethod
+    def _sequenza(fill: Fill) -> int | None:
+        """Identificativo di trade come numero, se lo e'.
+
+        Su Binance i trade id crescono per simbolo, e questo permette di
+        ricordare in modo compatto tutto il passato. Gli identificativi non
+        numerici (carta, backtest) non danno questa garanzia e restano
+        affidati alla sola finestra.
+        """
+        trade_id = fill.trade_id
+        return int(trade_id) if trade_id.isdigit() else None
+
     def has_applied(self, fill: Fill) -> bool:
         """Vero se questa esecuzione e' gia' stata contabilizzata."""
         key = self._fill_key(fill)
-        return key is not None and key in self._applied_fills
+        if key is None:
+            return False
+        if key in self._applied_fills:
+            return True
+        sequenza = self._sequenza(fill)
+        frontiera = self._fill_frontier.get(fill.symbol)
+        return sequenza is not None and frontiera is not None and sequenza <= frontiera
 
     def apply_fill(self, fill: Fill) -> TradeResult | None:
         """Registra un fill. Restituisce l'esito solo se ha chiuso esposizione.
@@ -193,10 +219,8 @@ class Portfolio:
             return None
         key = self._fill_key(fill)
         if key is not None:
-            self._applied_fills[key] = None
-            if len(self._applied_fills) > MAX_FILL_KEYS:
-                for vecchia in list(self._applied_fills)[:MAX_FILL_KEYS // 10]:
-                    del self._applied_fills[vecchia]
+            self._applied_fills[key] = (fill.symbol, self._sequenza(fill))
+            self._pota_le_chiavi()
 
         position = self.positions.get(fill.symbol, Position(fill.symbol))
         was_open = not position.is_flat
@@ -225,6 +249,26 @@ class Portfolio:
         result = TradeResult(symbol=fill.symbol, ts_ms=fill.ts_ms, realized_pnl=realized)
         self.trades.append(result)
         return result
+
+    def _pota_le_chiavi(self) -> None:
+        """Toglie le chiavi piu' vecchie alzando la frontiera dei simboli.
+
+        Buttare una chiave senza alzare la frontiera significa dimenticare
+        di aver gia' contabilizzato quel fill: la riconciliazione, che
+        ripesca gli ordini vecchi, lo riapplicherebbe. Qui la memoria resta
+        limitata ma non si perde nulla sui fill con identificativo
+        crescente.
+        """
+        if len(self._applied_fills) <= self.max_fill_keys:
+            return
+        quante = max(1, self.max_fill_keys // 10)
+        for vecchia in list(self._applied_fills)[:quante]:
+            symbol, sequenza = self._applied_fills.pop(vecchia)
+            if sequenza is None:
+                continue
+            attuale = self._fill_frontier.get(symbol)
+            if attuale is None or sequenza > attuale:
+                self._fill_frontier[symbol] = sequenza
 
     def update_mark(self, symbol: str, price: Decimal) -> None:
         if price <= 0:

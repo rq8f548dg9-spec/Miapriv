@@ -1002,6 +1002,39 @@ class TestPortfolioAccounting:
         assert portfolio.positions["BTCUSDT"].quantity == D("0.001")
         assert portfolio.cash == D("140")
 
+    def test_un_fill_vecchio_non_torna_dopo_lespulsione(self) -> None:
+        """L'elenco dei fill visti ha un tetto, quindi le chiavi piu' vecchie
+        vengono espulse. Senza una frontiera, un fill antico ripescato dalla
+        riconciliazione verrebbe applicato una seconda volta e la posizione
+        sui libri raddoppierebbe senza che l'exchange sia cambiato."""
+        portfolio = Portfolio(D("200"), max_fill_keys=10)
+        antico = Fill(
+            "c", "BTCUSDT", Side.BUY, BTC_PRICE, D("0.0001"), D("0"), "USDT",
+            NOW, False, "1000",
+        )
+        portfolio.apply_fill(antico)
+        for i in range(1001, 1040):  # oltre il tetto: la chiave di "1000" esce
+            portfolio.apply_fill(
+                Fill("c", "BTCUSDT", Side.BUY, BTC_PRICE, D("0.0001"), D("0"), "USDT",
+                     NOW + i, False, str(i))
+            )
+        quantita_prima = portfolio.positions["BTCUSDT"].quantity
+
+        portfolio.apply_fill(antico)  # la riconciliazione lo ripesca
+        assert portfolio.positions["BTCUSDT"].quantity == quantita_prima
+
+    def test_senza_identificativo_numerico_vale_la_finestra(self) -> None:
+        """I fill di carta e di backtest non hanno un id crescente: li
+        protegge solo la finestra, e va detto invece di fingere altro."""
+        portfolio = Portfolio(D("200"), max_fill_keys=10)
+        fill = Fill(
+            "c", "BTCUSDT", Side.BUY, BTC_PRICE, D("0.0001"), D("0"), "USDT",
+            NOW, False, "paper-1",
+        )
+        portfolio.apply_fill(fill)
+        portfolio.apply_fill(fill)
+        assert portfolio.positions["BTCUSDT"].quantity == D("0.0001")
+
     def test_due_esecuzioni_distinte_si_contano_entrambe(self) -> None:
         """La difesa contro i doppioni non deve mangiare esecuzioni vere."""
         portfolio = Portfolio(D("200"))

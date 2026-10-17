@@ -39,7 +39,7 @@ from data.orderbook import ApplyResult, DepthUpdate, OrderBookState
 from data.store import ParquetStore
 from execution.binance import AiohttpClient, AmbiguousRequestError, BinanceBroker
 from execution.broker import Broker, BrokerError, PaperBroker
-from execution.idempotency import DuplicateOrderError, OrderRegistry, client_order_id
+from execution.idempotency import DuplicateOrderError, OrderRegistry
 from execution.reconcile import Reconciler
 from features.engine import FeatureEngine
 from monitoring.alerts import AlertManager, LogChannel, Severity
@@ -147,6 +147,7 @@ class TradingBot:
             self.risk.killswitch.restore(
                 tripped_at_ms=saved.killswitch_tripped_at_ms,
                 reason=saved.killswitch_reason,
+                flatten_pending=saved.killswitch_flatten_pending,
             )
             self._saved_peak_equity = saved.peak_equity
             self._saved_day_start_equity = saved.day_start_equity
@@ -189,16 +190,17 @@ class TradingBot:
 
     # -- identificatori ---------------------------------------------------
 
-    @staticmethod
     def _next_order_id(
-        *, symbol: str, side: Side, quantity: Decimal, intent: str, ts_ms: TimestampMs
+        self, *, symbol: str, side: Side, quantity: Decimal, intent: str, ts_ms: TimestampMs
     ) -> str:
         """Identificativo deterministico, uguale nella decisione e nell'invio.
 
         Averne due diversi spezzava il filo fra la riga di log che motiva
-        l'ordine e l'ordine che l'exchange ha ricevuto.
+        l'ordine e l'ordine che l'exchange ha ricevuto. Lo chiede al
+        registro perche' due decisioni distinte dello stesso secondo non
+        finiscano sullo stesso identificativo.
         """
-        return client_order_id(
+        return self.registry.unique_client_order_id(
             symbol=symbol,
             side=side,
             quantity=quantity,
@@ -234,12 +236,36 @@ class TradingBot:
             self.portfolio = await self.reconciler.rebuild_portfolio(prices=prices)
             self.last_prices.update(prices)
             self._restore_drawdown_references()
+            self._riarma_chiusura_se_resta_inventario()
             # La base appena stabilita va salvata prima di qualunque ordine:
             # un crash qui la perderebbe, e al riavvio il bot adotterebbe
             # come propria la posizione che sta per aprire.
             self.snapshot_state(force=True)
 
         self.decision_log.log_equity(self.clock.now_ms(), self.portfolio.equity, evento="avvio")
+
+    def _riarma_chiusura_se_resta_inventario(self) -> None:
+        """Dopo un riavvio, confronta lo stop con l'inventario vero.
+
+        Il flag della chiusura forzata puo' essere stato salvato prima del
+        crash, o non essere stato salvato affatto. Se lo stop e' scattato,
+        la configurazione prevede la chiusura e sul conto c'e' ancora una
+        posizione del bot, la chiusura va ritentata: un file non e' una
+        prova che l'inventario sia stato liquidato.
+        """
+        if not self.risk.killswitch.is_tripped:
+            return
+        if not self.config.risk.killswitch.flatten_positions_on_trigger:
+            return
+        rimaste = {
+            symbol: str(position.quantity)
+            for symbol, position in self.portfolio.positions.items()
+            if not position.is_flat
+        }
+        if rimaste:
+            self.risk.killswitch.require_flatten(
+                f"stop gia' scattato e posizioni ancora sul conto: {rimaste}"
+            )
 
     def check_order_size_feasible(self) -> list[str]:
         """Avvisa se l'ordine dichiarato e' piu' piccolo del minimo di coppia.
