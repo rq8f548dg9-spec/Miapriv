@@ -21,7 +21,7 @@ import hashlib
 import hmac
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any, Protocol
 from urllib.parse import urlencode
@@ -459,7 +459,39 @@ class BinanceBroker(Broker):
             if "-2013" in str(exc) or "-2011" in str(exc):
                 return None  # l'exchange non conosce questo ordine
             raise
-        return self._to_ack(payload, latency_ms=0.0)
+        ack = self._to_ack(payload, latency_ms=0.0)
+        if ack.filled_quantity <= 0 or ack.fills:
+            return ack
+        # GET order restituisce quantita' cumulative, non i singoli fill.
+        # Senza commissioni e trade ID non si puo' ricostruire il portafoglio.
+        try:
+            trades = await self._request(
+                "GET", "/api/v3/myTrades",
+                params={"symbol": symbol, "orderId": payload["orderId"], "limit": 1000},
+                signed=True, weight=20,
+            )
+        except BrokerError as exc:
+            raise AmbiguousRequestError("storico esecuzioni non disponibile") from exc
+        fills: dict[str, Fill] = {}
+        for item in trades:
+            if str(item["orderId"]) != ack.exchange_order_id or item["symbol"] != symbol:
+                raise AmbiguousRequestError("storico esecuzioni non corrispondente all'ordine")
+            fill = Fill(
+                client_order_id=client_order_id, symbol=symbol,
+                side=Side.BUY if item["isBuyer"] else Side.SELL,
+                price=Decimal(item["price"]), quantity=Decimal(item["qty"]),
+                fee=Decimal(item["commission"]), fee_asset=item["commissionAsset"],
+                ts_ms=int(item["time"]), is_maker=bool(item["isMaker"]),
+                trade_id=str(item["id"]), exchange_order_id=ack.exchange_order_id,
+            )
+            if fill.trade_id in fills and fills[fill.trade_id] != fill:
+                raise AmbiguousRequestError("esecuzioni duplicate incoerenti")
+            fills[fill.trade_id] = fill
+        if sum((f.quantity for f in fills.values()), Decimal(0)) != ack.filled_quantity:
+            # Pagine incomplete, consistenza eventuale o ordine ancora in
+            # movimento: non dichiarare contabilizzato uno stato parziale.
+            raise AmbiguousRequestError("storico esecuzioni incompleto: ordine da riconciliare")
+        return replace(ack, fills=tuple(fills.values()))
 
     async def recent_fills(self, symbol: str, since_ms: TimestampMs) -> list[Fill]:
         payload = await self._request(

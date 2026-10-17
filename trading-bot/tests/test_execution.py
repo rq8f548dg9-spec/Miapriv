@@ -483,6 +483,10 @@ class TestInvioAmbiguo:
         http = FakeHttp([
             HttpResponse(503, {"msg": "service unavailable"}),  # POST ambiguo
             HttpResponse(200, self.ESEGUITO),                    # GET di verifica
+            HttpResponse(200, [{"symbol": "BTCUSDT", "orderId": 7, "id": 8,
+                               "price": "60000", "qty": "0.001", "commission": "0.06",
+                               "commissionAsset": "USDT", "time": NOW,
+                               "isBuyer": True, "isMaker": False}]),
         ])
         clock = SimulatedClock(NOW)
         broker = BinanceBroker(config=config, credentials=credentials, clock=clock, http=http)

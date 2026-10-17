@@ -105,7 +105,11 @@ class KillSwitch:
         """Se si possono ancora aprire posizioni."""
         if not self.is_tripped:
             return True
-        return self._cooldown_expired(now_ms) and self.config.auto_resume
+        return (
+            not self._flatten_pending
+            and self._cooldown_expired(now_ms)
+            and self.config.auto_resume
+        )
 
     def restore(
         self,
