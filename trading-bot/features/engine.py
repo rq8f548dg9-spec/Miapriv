@@ -67,6 +67,12 @@ class SymbolFeatureState:
     last_close: Decimal | None = None
     last_candle_close_ms: TimestampMs = 0
     last_book: OrderBookSnapshot | None = None
+    #: Istante in cui il book e' stato aggiornato l'ultima volta.
+    last_book_ms: TimestampMs = 0
+    #: Quante volte il flusso di candele si e' interrotto. Ogni buco fa
+    #: ripartire le finestre: contarlo serve a sapere perche' il bot non
+    #: opera invece di cercare il guasto altrove.
+    gaps_seen: int = 0
 
     def __post_init__(self) -> None:
         self.volatility = RealizedVolatility(self.config.volatility_windows_bars)
@@ -103,6 +109,25 @@ class SymbolFeatureState:
                 "candela %s @%d gia' vista, ignorata", candle.symbol, candle.close_time_ms
             )
             return
+        if self._e_un_buco(candle):
+            # Le finestre contano barre, non tempo: se fra una barra e
+            # l'altra manca mezz'ora, rendimenti, volatilita' e ATR
+            # mescolerebbero epoche diverse e il vettore si dichiarerebbe
+            # completo mentre descrive un mercato che non c'e' piu'. Si
+            # riparte, e il warmup ricomincia.
+            durata = candle.close_time_ms - candle.open_time_ms + 1
+            logger.warning(
+                "buco nel flusso di %s: %d ms fra la chiusura %d e l'apertura %d "
+                "(una barra dura %d ms). Le finestre ripartono.",
+                candle.symbol,
+                candle.open_time_ms - self.last_candle_close_ms - 1,
+                self.last_candle_close_ms,
+                candle.open_time_ms,
+                durata,
+            )
+            self.gaps_seen += 1
+            self._reset_finestre()
+
         self.volatility.update(candle.close)
         self.atr.update(candle)
         self.momentum.update(candle.close)
@@ -110,19 +135,53 @@ class SymbolFeatureState:
         self.last_close = candle.close
         self.last_candle_close_ms = candle.close_time_ms
 
+    def _e_un_buco(self, candle: Candle) -> bool:
+        """Vero se fra l'ultima barra e questa manca almeno una barra.
+
+        Le candele di Binance sono contigue: la successiva apre il
+        millisecondo dopo la chiusura della precedente. Si tollera mezza
+        barra di scarto per non inciampare in arrotondamenti dei timestamp.
+        """
+        if self.bars_seen == 0 or self.last_candle_close_ms == 0:
+            return False
+        durata = candle.close_time_ms - candle.open_time_ms + 1
+        distanza = candle.open_time_ms - self.last_candle_close_ms - 1
+        return distanza > durata // 2
+
+    def _reset_finestre(self) -> None:
+        """Ricomincia da capo: le finestre non possono contenere due epoche."""
+        self.volatility = RealizedVolatility(self.config.volatility_windows_bars)
+        self.atr = AverageTrueRange(self.config.atr_window_bars)
+        self.momentum = MomentumFeatures(
+            self.config.returns_windows_bars, self.config.zscore_window_bars
+        )
+        self.bars_seen = 0
+        self.last_close = None
+
     def on_trade(self, trade: Trade) -> None:
         self.order_flow.update(trade)
 
     def on_book(self, book: OrderBookSnapshot | None) -> None:
         """Registra il book. ``None`` (book non allineato) cancella il precedente."""
         self.last_book = book
+        self.last_book_ms = book.ts_ms if book is not None else 0
 
     def compute(self, now_ms: TimestampMs, warmup_bars: int) -> FeatureVector:
         values: dict[str, float] = {}
         values.update(self.volatility.features())
         values.update(self.momentum.features())
         values.update(self.order_flow.features(now_ms))
-        values.update(book_features(self.last_book, self.config.book_depth_levels))
+        # Un book fermo non e' un book: oltre la soglia le sue feature
+        # spariscono invece di restare li' a pesare sul punteggio.
+        eta_book = now_ms - self.last_book_ms if self.last_book is not None else None
+        book_utile = (
+            self.last_book
+            if eta_book is not None and eta_book <= self.config.max_book_age_ms
+            else None
+        )
+        values.update(book_features(book_utile, self.config.book_depth_levels))
+        if eta_book is not None:
+            values["book_age_ms"] = float(max(0, eta_book))
 
         if self.last_close is not None:
             atr_bps = self.atr.value_bps(self.last_close)

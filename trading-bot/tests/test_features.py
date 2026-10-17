@@ -215,6 +215,17 @@ class TestBookFeatures:
         assert features["book_microprice_dev_bps"] > 0
 
 
+def book_snapshot(ts_ms: int, symbol: str = "BTCUSDT") -> OrderBookSnapshot:
+    """Book minimo ma valido, con l'istante dell'ultimo aggiornamento."""
+    return OrderBookSnapshot(
+        symbol=symbol,
+        last_update_id=1,
+        bids=(BookLevel(D("99.99"), D("2")), BookLevel(D("99.98"), D("3"))),
+        asks=(BookLevel(D("100.01"), D("2")), BookLevel(D("100.02"), D("3"))),
+        ts_ms=ts_ms,
+    )
+
+
 class TestFeatureEngine:
     @pytest.fixture
     def config(self) -> FeaturesConfig:
@@ -273,6 +284,58 @@ class TestFeatureEngine:
         engine.on_candle(candle("100", 5))
         assert engine.state_for("BTCUSDT").bars_seen == 1
 
+    def test_un_buco_nelle_candele_fa_ripartire_le_finestre(
+        self, config: FeaturesConfig
+    ) -> None:
+        """Le finestre contano barre, non tempo: se fra una barra e l'altra
+        mancano ore, rendimenti, volatilita' e ATR mescolano epoche diverse
+        e il vettore sembra completo quando non lo e'."""
+        engine = FeatureEngine(config)
+        for i in range(config.warmup_bars + 5):
+            engine.on_candle(candle("100", i))
+        assert engine.compute("BTCUSDT", NOW + 1_000 * MINUTE).is_complete
+
+        # salto di mille minuti: manutenzione dell'exchange, feed caduto,
+        # storico con una lacuna
+        engine.on_candle(candle("100", config.warmup_bars + 1_005))
+        stato = engine.state_for("BTCUSDT")
+        assert stato.bars_seen == 1, "dopo un buco le finestre ripartono"
+        assert stato.gaps_seen == 1
+        assert not engine.compute(
+            "BTCUSDT", NOW + (config.warmup_bars + 1_006) * MINUTE
+        ).is_complete
+
+    def test_le_candele_contigue_non_fanno_ripartire_niente(
+        self, config: FeaturesConfig
+    ) -> None:
+        engine = FeatureEngine(config)
+        for i in range(20):
+            engine.on_candle(candle("100", i))
+        assert engine.state_for("BTCUSDT").bars_seen == 20
+        assert engine.state_for("BTCUSDT").gaps_seen == 0
+
+    def test_un_book_vecchio_non_entra_nelle_feature(
+        self, config: FeaturesConfig
+    ) -> None:
+        """Il book pesa per quasi meta' del punteggio delle regole. Se il
+        flusso depth si ferma mentre i trade continuano, il bot decide su
+        uno spessore di libro che non esiste piu'."""
+        engine = FeatureEngine(config)
+        for i in range(config.warmup_bars + 1):
+            engine.on_candle(candle("100", i))
+        engine.on_book("BTCUSDT", book_snapshot(NOW))
+
+        fresco = engine.compute("BTCUSDT", NOW + 1_000)
+        assert "book_imbalance" in fresco.values
+        assert fresco.values["book_age_ms"] == 1_000
+
+        stantio = engine.compute("BTCUSDT", NOW + config.max_book_age_ms + 1)
+        assert "book_imbalance" not in stantio.values, (
+            "un book fermo non deve piu' pilotare il segnale"
+        )
+        assert "book_microprice_dev_bps" not in stantio.values
+        assert stantio.values["book_age_ms"] > config.max_book_age_ms
+
     def test_simboli_indipendenti(self, config: FeaturesConfig) -> None:
         engine = FeatureEngine(config)
         for i in range(15):
@@ -292,13 +355,18 @@ class TestFeatureEngine:
         engine = FeatureEngine(config)
         for i in range(15):
             engine.on_candle(candle("100", i))
+        istante = NOW + 15 * MINUTE
         engine.on_book(
             "BTCUSDT",
             OrderBookSnapshot(
-                "BTCUSDT", 1, (BookLevel(D("100"), D("2")),), (BookLevel(D("101"), D("1")),), NOW
+                "BTCUSDT",
+                1,
+                (BookLevel(D("100"), D("2")),),
+                (BookLevel(D("101"), D("1")),),
+                istante,
             ),
         )
-        vector = engine.compute("BTCUSDT", NOW + 15 * MINUTE)
+        vector = engine.compute("BTCUSDT", istante)
         assert "book_spread_bps" in vector.values
         assert vector.values["book_top_imbalance"] > 0
 

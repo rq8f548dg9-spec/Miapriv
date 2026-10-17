@@ -333,6 +333,11 @@ class FeaturesConfig(_Base):
     returns_windows_bars: tuple[int, ...] = (1, 5, 15, 60)
     volatility_windows_bars: tuple[int, ...] = (15, 60, 240)
     atr_window_bars: int = Field(default=14, ge=2)
+    #: Oltre questa eta' il book non entra piu' nelle feature. Il libro pesa
+    #: per quasi meta' del punteggio delle regole: se il flusso depth si
+    #: ferma mentre i trade continuano, il bot deciderebbe su uno spessore
+    #: di libro che non esiste piu'.
+    max_book_age_ms: int = Field(default=5_000, ge=500)
     zscore_window_bars: int = Field(default=60, ge=10)
     #: Finestra temporale per l'order flow imbalance, in millisecondi.
     ofi_windows_ms: tuple[int, ...] = (1_000, 5_000, 30_000)
