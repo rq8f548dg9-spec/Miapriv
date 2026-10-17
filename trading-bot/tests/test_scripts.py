@@ -10,12 +10,16 @@ from __future__ import annotations
 import importlib
 import sys
 from collections.abc import Sequence
+from decimal import Decimal
 from importlib.machinery import ModuleSpec
+from pathlib import Path
 from types import ModuleType
 
 import pytest
+from pydantic import SecretStr
 
-from config.schema import INTERVAL_MS, DataConfig
+from config.credentials import Credentials
+from config.schema import INTERVAL_MS, DataConfig, Mode, load_config
 
 
 class TestIntervalliScaricabili:
@@ -69,3 +73,62 @@ class TestBenchmarkSuWindows:
 
         picco = benchmark.picco_memoria_mb()
         assert picco is None or picco > 0
+
+
+class TestScaricoDelFlussoOrdini:
+    """Senza il flusso ordini storico il backtest resta cieco su meta'
+    degli ingressi. L'endpoint aggTrades e' pubblico come quello delle
+    candele: non servono chiavi, serve solo chiederlo."""
+
+    @pytest.mark.asyncio
+    async def test_gli_aggtrades_diventano_trade(self) -> None:
+        from execution.binance import BinanceBroker, HttpResponse
+        from tests.test_execution import FakeHttp, make_broker
+
+        righe = [
+            {"a": 100, "p": "60000.00", "q": "0.10", "T": 1_700_000_000_000, "m": True},
+            {"a": 101, "p": "60001.00", "q": "0.20", "T": 1_700_000_000_500, "m": False},
+        ]
+        http = FakeHttp([HttpResponse(200, righe)])
+        broker: BinanceBroker = make_broker(
+            load_config(Path("config/config.yaml")),
+            Credentials(
+                api_key=SecretStr("public"),
+                api_secret=SecretStr("public"),
+                mode=Mode.TESTNET,
+            ),
+            http,
+        )
+        trade = await broker.agg_trades("BTCUSDT", start_ms=1_700_000_000_000)
+
+        assert [t.trade_id for t in trade] == [100, 101]
+        assert trade[0].is_buyer_maker is True
+        assert trade[1].quantity == Decimal("0.20")
+        assert "/api/v3/aggTrades?" in http.requests[0][1]
+        assert "signature=" not in http.requests[0][1], (
+            "e' un endpoint pubblico: non si firma e non si usano chiavi vere"
+        )
+
+    @pytest.mark.asyncio
+    async def test_la_paginazione_riparte_dallidentificativo(self) -> None:
+        """Due trade nello stesso millisecondo: ripartire dal tempo li
+        prenderebbe due volte o ne salterebbe uno."""
+        from execution.binance import BinanceBroker, HttpResponse
+        from tests.test_execution import FakeHttp, make_broker
+
+        http = FakeHttp([HttpResponse(200, [])])
+        broker: BinanceBroker = make_broker(
+            load_config(Path("config/config.yaml")),
+            Credentials(
+                api_key=SecretStr("public"),
+                api_secret=SecretStr("public"),
+                mode=Mode.TESTNET,
+            ),
+            http,
+        )
+        await broker.agg_trades("BTCUSDT", from_id=500)
+        assert "fromId=500" in http.requests[0][1]
+        assert "startTime" not in http.requests[0][1]
+
+        with pytest.raises(Exception, match="start_ms oppure from_id"):
+            await broker.agg_trades("BTCUSDT")

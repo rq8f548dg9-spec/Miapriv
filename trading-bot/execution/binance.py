@@ -39,6 +39,7 @@ from core.types import (
     SymbolFilters,
     TimeInForce,
     TimestampMs,
+    Trade,
 )
 from execution.broker import AccountState, Broker, BrokerError, DepthSnapshot, OrderAck
 
@@ -643,6 +644,42 @@ class BinanceBroker(Broker):
                 weight=2,
             )
         )
+
+    async def agg_trades(
+        self,
+        symbol: str,
+        *,
+        start_ms: TimestampMs | None = None,
+        from_id: int | None = None,
+        limit: int = 1000,
+    ) -> list[Trade]:
+        """Flusso ordini storico aggregato, per popolare lo store.
+
+        Endpoint pubblico come ``klines``: niente firma, niente chiavi. Il
+        backtest senza questi dati gira con meta' degli ingressi spenti.
+        """
+        if (start_ms is None) == (from_id is None):
+            raise BrokerError("agg_trades: serve start_ms oppure from_id, non entrambi")
+        params: dict[str, Any] = {"symbol": symbol, "limit": limit}
+        # Si riparte dall'identificativo e non dall'istante: due trade nello
+        # stesso millisecondo, ripartendo dal tempo, verrebbero presi due
+        # volte o saltati.
+        if from_id is not None:
+            params["fromId"] = from_id
+        else:
+            params["startTime"] = start_ms
+        righe = await self._request("GET", "/api/v3/aggTrades", params=params, weight=4)
+        return [
+            Trade(
+                symbol=symbol,
+                trade_id=int(riga["a"]),
+                price=Decimal(str(riga["p"])),
+                quantity=Decimal(str(riga["q"])),
+                ts_ms=int(riga["T"]),
+                is_buyer_maker=bool(riga["m"]),
+            )
+            for riga in righe
+        ]
 
     async def close(self) -> None:
         await self.http.close()

@@ -46,6 +46,13 @@ def _metriche(*, trades: int, total_return: str, expectancy: str) -> Performance
     )
 
 
+class _CandelaFinta:
+    """Il motore non la guarda: serve solo a delimitare la finestra."""
+
+    open_time_ms = 1_700_000_000_000
+    close_time_ms = 1_700_000_059_999
+
+
 class _RisultatoFinto:
     def __init__(self, metrics: PerformanceMetrics) -> None:
         self.metrics = metrics
@@ -60,13 +67,16 @@ def _prepara(
     class StoreFinto:
         def __init__(self, *_: Any, **__: Any) -> None: ...
 
-        def read_candles(self, **_: Any) -> list[object]:
-            return [object()]
+        def read_candles(self, **_: Any) -> list[Any]:
+            return [_CandelaFinta()]
+
+        def read_trades(self, **_: Any) -> list[Any]:
+            return []
 
     class MotoreFinto:
         def __init__(self, *_: Any, **__: Any) -> None: ...
 
-        def run(self, _candles: Any) -> _RisultatoFinto:
+        def run(self, _candles: Any, trades: Any = ()) -> _RisultatoFinto:
             return _RisultatoFinto(metrics)
 
     monkeypatch.setattr(main_module, "ParquetStore", StoreFinto)

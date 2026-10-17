@@ -62,7 +62,9 @@ def to_candle(symbol: str, row: list[object]) -> Candle:
     )
 
 
-async def fetch(symbols: list[str], days: int, config_path: Path) -> int:
+async def fetch(
+    symbols: list[str], days: int, config_path: Path, *, trade_days: int = 0
+) -> int:
     config = load_config(config_path)
     interval = config.data.candle_interval
     step_ms = step_ms_for(interval)
@@ -99,6 +101,11 @@ async def fetch(symbols: list[str], days: int, config_path: Path) -> int:
                 total += len(candles)
                 cursor = int(str(rows[-1][0])) + step_ms
                 logger.info("%s: %d candele fino a %s", symbol, total, cursor)
+        if trade_days > 0:
+            totale_trade = await _scarica_flusso(
+                broker, store, symbols, giorni=trade_days, fine_ms=end_ms
+            )
+            logger.info("scaricati %d trade (flusso ordini)", totale_trade)
     finally:
         store.flush()
         await broker.close()
@@ -107,11 +114,52 @@ async def fetch(symbols: list[str], days: int, config_path: Path) -> int:
     return total
 
 
+async def _scarica_flusso(
+    broker: BinanceBroker,
+    store: ParquetStore,
+    symbols: list[str],
+    *,
+    giorni: int,
+    fine_ms: int,
+) -> int:
+    """Scarica il flusso ordini aggregato degli ultimi giorni.
+
+    E' molto piu' voluminoso delle candele (BTCUSDT fa centinaia di
+    migliaia di trade al giorno), e per questo si scarica una finestra
+    corta e separata. Senza di esso pero' il backtest gira con l'order
+    flow spento, che e' meta' di cio' che guarda la strategia dal vivo.
+    """
+    inizio_ms = fine_ms - giorni * 86_400_000
+    totale = 0
+    for symbol in symbols:
+        trade = await broker.agg_trades(symbol, start_ms=inizio_ms, limit=1000)
+        while trade:
+            dentro = [t for t in trade if t.ts_ms < fine_ms]
+            store.add_trades(dentro)
+            totale += len(dentro)
+            if len(dentro) < len(trade) or len(trade) < 1000:
+                break
+            logger.info("%s: %d trade fino a %s", symbol, totale, trade[-1].ts_ms)
+            trade = await broker.agg_trades(
+                symbol, from_id=trade[-1].trade_id + 1, limit=1000
+            )
+    return totale
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scarica candele storiche da Binance")
     parser.add_argument("--days", type=int, default=30, help="giorni di storia da scaricare")
     parser.add_argument("--symbols", nargs="*", help="simboli (default: quelli abilitati)")
     parser.add_argument("--config", type=Path, default=Path("config/config.yaml"))
+    parser.add_argument(
+        "--giorni-flusso",
+        type=int,
+        default=0,
+        dest="trade_days",
+        help="giorni di flusso ordini (aggTrades) da scaricare: molto piu' "
+        "voluminoso delle candele, ma senza di esso il backtest e' cieco "
+        "su meta' degli ingressi",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -119,7 +167,9 @@ def main() -> int:
     config = load_config(args.config)
     symbols = args.symbols or [s.symbol for s in config.enabled_symbols]
 
-    total = asyncio.run(fetch(symbols, args.days, args.config))
+    total = asyncio.run(
+        fetch(symbols, args.days, args.config, trade_days=args.trade_days)
+    )
     print(f"scaricate {total} candele in {config.data.parquet_root}")
     return 0 if total else 1
 

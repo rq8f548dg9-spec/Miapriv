@@ -41,6 +41,7 @@ from core.types import (
     Side,
     SymbolFilters,
     TimestampMs,
+    Trade,
     ms_to_datetime,
 )
 from features.engine import FeatureEngine
@@ -128,10 +129,25 @@ class BacktestEngine:
             )
         self.costs = CostModel(costs_config)
 
-    def run(self, candles: Sequence[Candle]) -> BacktestResult:
-        """Esegue la simulazione sulle candele date, in ordine cronologico."""
+    def run(
+        self, candles: Sequence[Candle], trades: Sequence[Trade] = ()
+    ) -> BacktestResult:
+        """Esegue la simulazione sulle candele date, in ordine cronologico.
+
+        ``trades`` e' il flusso ordini pubblico. Senza, meta' degli
+        ingressi della baseline e' spenta e il backtest misura una
+        strategia diversa da quella che gira dal vivo: l'order flow
+        imbalance pesa quanto lo slancio, e in sua assenza il punteggio
+        esce sempre vicino allo zero. Il libro invece non e' recuperabile
+        da nessun endpoint pubblico e resta fuori: con i soli trade il
+        backtest e' un limite inferiore, non la misura completa.
+        """
         if not candles:
             raise ValueError("nessuna candela da simulare")
+        # Copiato subito, prima che piu' sotto il nome ``trades`` venga
+        # riusato per gli esiti delle operazioni: la svista e' costata un
+        # flusso ordini che il motore riceveva e non guardava.
+        flusso = sorted(trades, key=lambda t: (t.ts_ms, t.trade_id))
         ordered = sorted(candles, key=lambda c: (c.close_time_ms, c.symbol))
         open_candles = [c for c in ordered if not c.is_closed]
         if open_candles:
@@ -182,7 +198,7 @@ class BacktestEngine:
             self.config, clock, self._client_order_id, esposizione_in_volo
         )
         fills: list[Fill] = []
-        trades: list[TradeResult] = []
+        esiti: list[TradeResult] = []
         equity_curve: list[tuple[TimestampMs, Decimal]] = [(clock.now_ms(), portfolio.equity)]
         submitted = 0
         rejected = 0
@@ -199,8 +215,14 @@ class BacktestEngine:
             events.append((candle.close_time_ms, 1, candle.symbol, candle))
         events.sort(key=lambda item: (item[0], item[1], item[2]))
 
+        prossimo_trade = 0
+
         for ts_ms, kind, _symbol, candle in events:
             clock.advance_to(ts_ms)
+
+            while prossimo_trade < len(flusso) and flusso[prossimo_trade].ts_ms <= ts_ms:
+                features.on_trade(flusso[prossimo_trade])
+                prossimo_trade += 1
 
             if kind == 0:
                 # --- apertura barra: si eseguono gli ordini decisi alla barra precedente
@@ -223,7 +245,7 @@ class BacktestEngine:
                         fills.append(fill)
                         result = portfolio.apply_fill(fill)
                         if result is not None:
-                            trades.append(result)
+                            esiti.append(result)
                         piano_atteso = piani_in_attesa.pop(candle.symbol, None)
                         posizione = portfolio.positions.get(candle.symbol)
                         if posizione is None or posizione.is_flat:
@@ -343,7 +365,7 @@ class BacktestEngine:
 
         metrics = compute_metrics(
             equity_curve,
-            trades,
+            esiti,
             total_fees=portfolio.fees_paid,
             periods_per_year=self._periods_per_year(ordered),
             risk_per_trade_quote=self.config.risk.sizing.target_order_quote,
@@ -354,7 +376,7 @@ class BacktestEngine:
             final_equity=portfolio.equity,
             equity_curve=equity_curve,
             fills=fills,
-            trades=trades,
+            trades=esiti,
             decisions=risk.decisions,
             metrics=metrics,
             bars_processed=len(ordered),

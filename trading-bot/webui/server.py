@@ -996,6 +996,10 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
             return _error(f"c'e' gia' un'operazione in corso: {supervisor.job.name}")
         payload = await _read_json(request)
         days = max(1, min(int(payload.get("giorni", 30)), 365))
+        # Il flusso ordini e' molto piu' voluminoso delle candele, quindi
+        # ha una finestra corta e separata. Senza, la prova della strategia
+        # resta cieca su meta' di cio' che il bot guarda dal vivo.
+        trade_days = max(0, min(int(payload.get("giorni_flusso", 2)), 7))
 
         job = Job(name=f"scarico dati ({days} giorni)")
         supervisor.job = job
@@ -1008,6 +1012,7 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
                     [s.symbol for s in supervisor.config.enabled_symbols],
                     days,
                     config_path,
+                    trade_days=trade_days,
                 )
                 job.state = "completato"
                 job.message = f"scaricate {total} candele"
@@ -1051,7 +1056,17 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
                 raise UiError(
                     "nessuna candela salvata: esegui prima il passo 2 e scarica lo storico"
                 )
-            result = BacktestEngine(config, build_generator(config)).run(candles)
+            # Il flusso ordini, se c'e', entra nella simulazione: senza,
+            # l'order flow imbalance resta spento e la prova misura una
+            # strategia a cui manca meta' degli ingressi.
+            flusso = store.read_trades(
+                symbols=symbols,
+                start_ms=candles[0].open_time_ms,
+                end_ms=candles[-1].close_time_ms + 1,
+            )
+            result = BacktestEngine(config, build_generator(config)).run(
+                candles, trades=flusso
+            )
             metrics = result.metrics
             giudizio = assess(metrics)
             # I motivi si raggruppano per tipo, non per valore: "edge netto
@@ -1070,6 +1085,15 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
                     "nota": window_note,
                 },
                 "barre": result.bars_processed,
+                "trade_di_mercato": len(flusso),
+                "nota_flusso": (
+                    "con il flusso ordini: la prova vede quello che vede il bot dal "
+                    "vivo, tranne il libro, che non e' recuperabile dallo storico."
+                    if flusso
+                    else "senza flusso ordini: la prova e' cieca sull'order flow, che "
+                    "dal vivo pesa quanto lo slancio. Scaricalo per una misura "
+                    "piu' vicina al vero."
+                ),
                 "ordini": result.orders_submitted,
                 "rifiuti": result.orders_rejected,
                 # Ordini approvati che l'exchange simulato non avrebbe

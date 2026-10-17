@@ -232,6 +232,34 @@ class ParquetStore:
             for row in frame.iter_rows(named=True)
         ]
 
+    def read_trades(
+        self,
+        *,
+        symbols: Sequence[str] | None = None,
+        start_ms: TimestampMs | None = None,
+        end_ms: TimestampMs | None = None,
+    ) -> list[Trade]:
+        """Flusso ordini salvato, in ordine cronologico.
+
+        Serve al backtest quanto le candele: senza, la simulazione gira con
+        meta' degli ingressi spenti e misura una strategia diversa da
+        quella che opera dal vivo.
+        """
+        frame = self.read("trades", symbols=symbols, start_ms=start_ms, end_ms=end_ms)
+        if frame.is_empty():
+            return []
+        return [
+            Trade(
+                symbol=row["symbol"],
+                trade_id=row["trade_id"],
+                price=Decimal(row["price"]),
+                quantity=Decimal(row["quantity"]),
+                ts_ms=row["ts_ms"],
+                is_buyer_maker=row["is_buyer_maker"],
+            )
+            for row in frame.iter_rows(named=True)
+        ]
+
     def purge_older_than(self, cutoff_ms: TimestampMs) -> int:
         """Cancella le partizioni anteriori al taglio. Restituisce i file rimossi."""
         cutoff_day = day_partition(cutoff_ms)

@@ -631,3 +631,43 @@ class TestSimboliOstili:
         veleno = Trade("X/../../../fuori", 1, D("100"), D("1"), NOW, False)
         with pytest.raises(ValueError, match="simbolo"):
             store.add_trade(veleno)
+
+
+class TestLetturaDeiTrade:
+    """Il backtest ha bisogno del flusso ordini come ha bisogno delle
+    candele: lo store li salvava gia' e non c'era modo di rileggerli."""
+
+    def test_rilegge_i_trade_salvati(self, tmp_path: Path) -> None:
+        from data.store import ParquetStore
+
+        store = ParquetStore(tmp_path / "store")
+        store.add_trades(
+            [
+                Trade("BTCUSDT", i, D("60000"), D("0.1"), NOW + i * 1_000, i % 2 == 0)
+                for i in range(5)
+            ]
+        )
+        store.flush()
+
+        letti = ParquetStore(tmp_path / "store").read_trades(symbols=["BTCUSDT"])
+        assert [t.trade_id for t in letti] == [0, 1, 2, 3, 4]
+        assert letti[0].price == D("60000")
+        assert letti[0].is_buyer_maker is True
+
+    def test_la_finestra_temporale_filtra(self, tmp_path: Path) -> None:
+        from data.store import ParquetStore
+
+        store = ParquetStore(tmp_path / "store")
+        store.add_trades(
+            [
+                Trade("BTCUSDT", i, D("1"), D("1"), NOW + i * 1_000, False)
+                for i in range(10)
+            ]
+        )
+        store.flush()
+        letti = store.read_trades(
+            symbols=["BTCUSDT"], start_ms=NOW + 3_000, end_ms=NOW + 6_000
+        )
+        # Estremo destro escluso, come per le candele: una sola convenzione
+        # in tutto lo store, altrimenti i due letti divergono di una riga.
+        assert [t.trade_id for t in letti] == [3, 4, 5]

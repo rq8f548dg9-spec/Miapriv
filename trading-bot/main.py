@@ -90,7 +90,22 @@ def run_backtest(config: AppConfig) -> int:
         )
         return 2
 
-    result = BacktestEngine(config, build_generator(config)).run(candles)
+    # Il flusso ordini entra nella simulazione quando c'e': senza, l'order
+    # flow imbalance resta spento e si misura una strategia diversa da
+    # quella che gira dal vivo.
+    flusso = store.read_trades(
+        symbols=[s.symbol for s in config.enabled_symbols],
+        start_ms=candles[0].open_time_ms,
+        end_ms=candles[-1].close_time_ms + 1,
+    )
+    if flusso:
+        logger.info("flusso ordini nel backtest: %d trade", len(flusso))
+    else:
+        logger.warning(
+            "nessun flusso ordini salvato: la prova e' cieca sull'order flow. "
+            "Scaricalo con scripts/fetch_history.py --giorni-flusso N"
+        )
+    result = BacktestEngine(config, build_generator(config)).run(candles, trades=flusso)
     logger.info("backtest concluso: %s", result.summary())
     print(result.summary())
 

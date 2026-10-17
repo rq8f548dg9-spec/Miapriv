@@ -13,7 +13,15 @@ from backtest.metrics import compute_metrics, risk_of_ruin
 from backtest.walkforward import run_walk_forward, split_windows
 from config.schema import AppConfig, CostsConfig, WalkForwardConfig, load_config
 from core.portfolio import Portfolio, TradeResult
-from core.types import Candle, Order, OrderType, Side, SignalDirection, TimestampMs
+from core.types import (
+    Candle,
+    Order,
+    OrderType,
+    Side,
+    SignalDirection,
+    TimestampMs,
+    Trade,
+)
 from features.engine import FeatureVector
 from signals.base import GeneratedSignal, SignalGenerator, TradePlan
 from tests.test_no_lookahead import AlwaysTradingGenerator, synthetic_candles
@@ -624,3 +632,104 @@ class TestVerdetto:
         for trades, ret in ((14, 0.026), (150, 0.03), (150, -0.01)):
             metrics = self._metrics(trades=trades, ret=ret)
             assert metrics.is_viable == (assess(metrics).outcome == "positivo")
+
+
+class TestFlussoOrdiniNelBacktest:
+    """Il backtest vedeva solo candele, e la baseline a regole prende quasi
+    meta' del suo punteggio dal flusso ordini e dal libro. Misurare la
+    strategia senza quei dati non misura questa strategia: dice
+    "nessun vantaggio" anche dove il vantaggio ci fosse, perche' meta'
+    degli ingressi e' spenta.
+
+    Il libro storico non e' recuperabile da nessun endpoint pubblico, e
+    quindi resta fuori: il backtest con i soli trade e' un limite
+    inferiore, non la misura completa. Dirlo e' parte del risultato.
+    """
+
+    def _trades(
+        self, candles: list[Candle], *, per_barra: int = 4, compratori: bool = True
+    ) -> list[Trade]:
+        """Trade aggregati dentro ogni barra, tutti dallo stesso lato."""
+        flusso: list[Trade] = []
+        identificativo = 0
+        for candle in candles:
+            durata = candle.close_time_ms - candle.open_time_ms
+            for k in range(per_barra):
+                identificativo += 1
+                flusso.append(
+                    Trade(
+                        symbol=candle.symbol,
+                        trade_id=identificativo,
+                        price=candle.close,
+                        quantity=Decimal("0.5"),
+                        ts_ms=candle.open_time_ms + (k + 1) * durata // (per_barra + 1),
+                        is_buyer_maker=not compratori,
+                    )
+                )
+        return flusso
+
+    def test_il_flusso_ordini_entra_nelle_feature(self, config: AppConfig) -> None:
+        candles = synthetic_candles(400)
+        flusso = self._trades(candles)
+        motore = BacktestEngine(config, AlwaysTradingGenerator())
+
+        senza = motore.run(candles)
+        con = motore.run(candles, trades=flusso)
+
+        def chiavi(risultato: object) -> set[str]:
+            for decisione in reversed(risultato.decisions):  # type: ignore[attr-defined]
+                if decisione.signal is not None:
+                    return set(decisione.signal.features)
+            return set()
+
+        chiavi_senza = chiavi(senza)
+        chiavi_con = chiavi(con)
+        assert not any(k.startswith("ofi_") for k in chiavi_senza)
+        assert any(k.startswith("ofi_") for k in chiavi_con), (
+            "con i trade il vettore deve contenere l'order flow imbalance"
+        )
+
+    def test_un_trade_successivo_alla_decisione_non_e_osservabile(
+        self, config: AppConfig
+    ) -> None:
+        """La regola di sempre: il futuro non entra nel passato. Qui il
+        rischio e' concreto, perche' i trade arrivano piu' fitti delle
+        barre ed e' facile darli tutti in pasto in anticipo."""
+        candles = synthetic_candles(300)
+        flusso = self._trades(candles)
+        motore = BacktestEngine(config, AlwaysTradingGenerator())
+
+        prima = motore.run(candles, trades=flusso)
+
+        taglio = candles[200].close_time_ms
+        futuro = [
+            t
+            for t in flusso
+            if t.ts_ms <= taglio
+        ] + [
+            Trade(
+                symbol=t.symbol, trade_id=t.trade_id + 100_000, price=t.price * Decimal("3"),
+                quantity=Decimal("50"), ts_ms=t.ts_ms, is_buyer_maker=True,
+            )
+            for t in flusso
+            if t.ts_ms > taglio
+        ]
+        dopo = motore.run(candles, trades=futuro)
+
+        decisioni_prima = [d for d in prima.decisions if d.ts_ms <= taglio]
+        decisioni_dopo = [d for d in dopo.decisions if d.ts_ms <= taglio]
+        assert len(decisioni_prima) == len(decisioni_dopo)
+        for a, b in zip(decisioni_prima, decisioni_dopo, strict=True):
+            feature_a = a.signal.features if a.signal else None
+            feature_b = b.signal.features if b.signal else None
+            assert feature_a == feature_b, (
+                "un trade dopo l'istante di taglio ha cambiato una decisione precedente"
+            )
+
+    def test_i_trade_fuori_ordine_vengono_rifiutati(self, config: AppConfig) -> None:
+        candles = synthetic_candles(50)
+        flusso = self._trades(candles)
+        motore = BacktestEngine(config, AlwaysTradingGenerator())
+        assert motore.run(candles, trades=list(reversed(flusso))).bars_processed > 0, (
+            "l'ordine di ingresso non conta: il motore li riordina"
+        )
