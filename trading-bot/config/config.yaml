@@ -1,0 +1,138 @@
+# ---------------------------------------------------------------------------
+# Configurazione runtime del bot.
+#
+# Modalita' ammesse: backtest | testnet | live
+# Il default e' testnet e deve restare tale. Il passaggio a live richiede,
+# oltre a questo campo, la variabile d'ambiente I_UNDERSTAND_LIVE_TRADING_RISK=yes
+# (cfr. config/live_guard.py).
+# ---------------------------------------------------------------------------
+mode: testnet
+
+# Capitale di riferimento espresso nella valuta quote.
+# Nota: la testnet Binance Spot quota in USDT, non in EUR. I 200 EUR del piano
+# sono rappresentati qui come 200 USDT; il rapporto EUR/USDT non e' simulato
+# perche' non influenza la validita' della strategia in testnet.
+capital_quote: 200
+quote_asset: USDT
+
+symbols:
+  - symbol: BTCUSDT
+    base_asset: BTC
+    quote_asset: USDT
+    enabled: true
+    max_position_quote: 50
+  - symbol: ETHUSDT
+    base_asset: ETH
+    quote_asset: USDT
+    enabled: true
+    max_position_quote: 50
+  - symbol: BNBUSDT
+    base_asset: BNB
+    quote_asset: USDT
+    enabled: false
+    max_position_quote: 30
+
+risk:
+  sizing:
+    kelly_fraction: 0.25          # tetto non negoziabile: 1/4 di Kelly
+    target_order_quote: 5         # ordine nominale ~5 unita' quote
+    max_order_quote: 20
+    min_order_quote: 5
+    min_notional_safety_factor: 1.10
+    max_order_pct_of_equity: 0.10
+  limits:
+    max_open_positions: 2
+    max_gross_exposure_quote: 100
+    max_exposure_pct_of_equity: 0.50
+    max_pairwise_correlation: 0.80
+    correlation_lookback_bars: 240
+    min_correlation_samples: 60
+    max_orders_per_symbol_per_hour: 12
+    min_seconds_between_orders: 30
+  killswitch:
+    max_daily_drawdown_pct: 0.03      # -3% in giornata -> stop
+    max_total_drawdown_pct: 0.10      # -10% complessivo -> stop
+    max_consecutive_losses: 5
+    max_order_latency_ms: 2000
+    max_data_staleness_ms: 10000
+    max_reconnects_per_hour: 10
+    flatten_positions_on_trigger: true
+    cooldown_minutes: 60
+    auto_resume: false                # dopo uno stop deve guardare un umano
+
+data:
+  orderbook_depth: 20
+  orderbook_update_speed_ms: 100
+  buffer_capacity: 10000
+  candle_interval: 1m
+  orderbook_resync_s: 300
+  ws_ping_interval_s: 20
+  ws_reconnect_initial_s: 1.0
+  ws_reconnect_max_s: 60.0
+  parquet_root: data_store
+  write_batch_size: 5000
+  retention_days: 90
+
+features:
+  returns_windows_bars: [1, 5, 15, 60]
+  volatility_windows_bars: [15, 60, 240]
+  atr_window_bars: 14
+  zscore_window_bars: 60
+  ofi_windows_ms: [1000, 5000, 30000]
+  book_depth_levels: 10
+
+signals:
+  generator: rules              # la baseline da battere
+  min_probability: 0.55
+  min_expected_edge_bps: 5.0    # soglia DOPO i costi stimati
+  signal_horizon_ms: 300000
+  cooldown_s: 60
+  ml_enabled: false             # placeholder finche' la baseline non regge i costi
+  ml_model_path: null
+
+backtest:
+  start: 2026-01-01T00:00:00Z
+  end: 2026-06-30T00:00:00Z
+  initial_capital_quote: 200
+  costs:
+    maker_fee_bps: 1.0
+    taker_fee_bps: 10.0
+    base_slippage_bps: 1.0
+    impact_coefficient_bps: 5.0
+    reference_depth_quote: 10000
+    latency_ms: 150
+    limit_order_reject_rate: 0.20
+  walkforward:
+    train_days: 30
+    test_days: 7
+    step_days: 7
+    purge_bars: 60
+    embargo_bars: 60
+    min_trades_per_window: 20
+
+monitoring:
+  log_level: INFO
+  json_logs: true
+  log_file: logs/trading_bot.jsonl
+  state_snapshot_s: 60
+  state_path: state/bot_state.json
+  reconcile_interval_s: 300
+  alerts_enabled: true
+  alert_channels: [log]
+
+exchange:
+  name: binance
+  testnet_rest_url: https://testnet.binance.vision
+  testnet_ws_url: wss://stream.testnet.binance.vision/stream
+  live_rest_url: https://api.binance.com
+  live_ws_url: wss://stream.binance.com:9443/stream
+  recv_window_ms: 5000
+  request_timeout_s: 10.0
+  max_request_weight_per_minute: 1000
+  max_orders_per_10s: 20
+  max_orders_per_day: 5000
+  backoff_initial_s: 1.0
+  backoff_max_s: 60.0
+  backoff_multiplier: 2.0
+  max_retries: 5
+  exchange_info_refresh_s: 3600
