@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -467,3 +467,84 @@ class Decision:
             raise ValueError("decisione approvata senza ordine associato")
         if not self.approved and not self.rejection_reasons:
             raise ValueError("decisione rifiutata senza motivazione: autopsia impossibile")
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolFilters:
+    """Filtri di negoziazione di un simbolo, letti da ``exchangeInfo``.
+
+    Non sono mai valori ipotizzati: Binance cambia i notional minimi e gli step
+    senza preavviso, e un ordine che li viola viene rifiutato dopo l'invio,
+    quando ha gia' consumato rate limit e tempo. Il risk manager li applica
+    PRIMA dell'invio.
+    """
+
+    symbol: str
+    tick_size: Decimal
+    step_size: Decimal
+    min_quantity: Decimal
+    max_quantity: Decimal
+    min_notional: Decimal
+    base_precision: int
+    quote_precision: int
+    #: Istante di lettura: un filtro vecchio va riletto, non riusato.
+    fetched_at_ms: TimestampMs
+
+    def __post_init__(self) -> None:
+        if self.tick_size <= 0 or self.step_size <= 0:
+            raise ValueError(f"{self.symbol}: tick_size e step_size devono essere positivi")
+        if self.min_quantity > self.max_quantity:
+            raise ValueError(f"{self.symbol}: min_quantity > max_quantity")
+
+    def round_quantity(self, quantity: Decimal) -> Decimal:
+        """Tronca la quantita' allo step. Sempre verso il basso: non si compra
+        mai piu' di quanto il sizing ha deciso."""
+        if quantity <= 0:
+            return Decimal(0)
+        steps = (quantity / self.step_size).to_integral_value(rounding=ROUND_DOWN)
+        return (steps * self.step_size).normalize()
+
+    def round_price(self, price: Decimal, side: Side) -> Decimal:
+        """Allinea il prezzo al tick nella direzione conservativa.
+
+        Un BUY arrotonda verso il basso e un SELL verso l'alto: l'ordine
+        risultante non e' mai piu' aggressivo di quello richiesto.
+        """
+        rounding = ROUND_DOWN if side is Side.BUY else ROUND_UP
+        ticks = (price / self.tick_size).to_integral_value(rounding=rounding)
+        return (ticks * self.tick_size).normalize()
+
+    def is_stale(self, now_ms: TimestampMs, max_age_ms: int) -> bool:
+        return now_ms - self.fetched_at_ms > max_age_ms
+
+    def quantity_violations(self, quantity: Decimal, price: Decimal) -> tuple[str, ...]:
+        """Filtri violati dalla sola quantita' e dal notional risultante.
+
+        Separato da ``violations`` perche' il dimensionamento lavora su un
+        prezzo di riferimento (il mid), che non deve essere allineato al tick:
+        l'allineamento riguarda il prezzo dell'ordine, deciso dopo.
+        """
+        problems: list[str] = []
+        if quantity < self.min_quantity:
+            problems.append(
+                f"quantita' {quantity} sotto LOT_SIZE.minQty {self.min_quantity}"
+            )
+        if quantity > self.max_quantity:
+            problems.append(
+                f"quantita' {quantity} sopra LOT_SIZE.maxQty {self.max_quantity}"
+            )
+        if quantity % self.step_size != 0:
+            problems.append(f"quantita' {quantity} non multipla di stepSize {self.step_size}")
+        notional = quantity * price
+        if notional < self.min_notional:
+            problems.append(
+                f"notional {notional} sotto MIN_NOTIONAL {self.min_notional}"
+            )
+        return tuple(problems)
+
+    def violations(self, quantity: Decimal, price: Decimal) -> tuple[str, ...]:
+        """Filtri violati da un ordine completo. Vuoto significa inviabile."""
+        problems = list(self.quantity_violations(quantity, price))
+        if price % self.tick_size != 0:
+            problems.append(f"prezzo {price} non multiplo di tickSize {self.tick_size}")
+        return tuple(problems)
