@@ -37,6 +37,7 @@ import yaml
 from aiohttp import web
 
 from backtest.engine import BacktestEngine
+from backtest.frequenza import esplora, esplora_orizzonti
 from backtest.metrics import assess
 from config.credentials import (
     TESTNET_KEY_VAR,
@@ -1024,6 +1025,79 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
         supervisor.job_task = asyncio.create_task(worker())
         return _json({"ok": True, "lavoro": job.to_dict()})
 
+    async def explore_frequency(request: web.Request) -> web.Response:
+        """Misura quante operazioni produce ogni impostazione, e il costo.
+
+        E' la risposta onesta a "voglio che operi di piu'": non si', non
+        no, ma quante e a che prezzo, sui dati che l'utente ha scaricato.
+        """
+        if supervisor.job is not None and supervisor.job.is_running:
+            return _error(f"c'e' gia' un'operazione in corso: {supervisor.job.name}")
+        job = Job(name="esplorazione della frequenza")
+
+        def work() -> dict[str, Any]:
+            config = supervisor.config
+            store = ParquetStore(config.data.parquet_root)
+            symbols = [s.symbol for s in config.enabled_symbols]
+            candles = store.read_candles(symbols=symbols)
+            if not candles:
+                raise UiError(
+                    "nessuna candela salvata: esegui prima il passo 2 e scarica lo storico"
+                )
+            flusso = store.read_trades(
+                symbols=symbols,
+                start_ms=candles[0].open_time_ms,
+                end_ms=candles[-1].close_time_ms + 1,
+            )
+            righe = esplora(config, candles, flusso)
+            # L'altra meta' della domanda: non solo quanto si e' esigenti,
+            # ma su che durata di barra. Su barre piu' lunghe il movimento
+            # atteso cresce mentre il costo di un giro resta lo stesso, ed
+            # e' spesso li' che si decide se la strategia possa operare.
+            orizzonti = esplora_orizzonti(config, candles, flusso)
+            minime = config.features.warmup_bars + 50
+            saltati = [
+                f"{f} barre" for f in (1, 5, 15, 60) if len(candles) // f < minime
+            ]
+            return {
+                "profili": [riga.to_dict() for riga in righe],
+                "orizzonti": [riga.to_dict() for riga in orizzonti],
+                "orizzonti_saltati": saltati,
+                "con_flusso_ordini": bool(flusso),
+                "nota": (
+                    "Ogni giro completo costa "
+                    f"{righe[0].costo_giro_bps:.1f} punti base fra commissioni e "
+                    "spread. La colonna «costo al giorno» dice quanto pesa, in "
+                    "percentuale del controvalore scambiato, la frequenza di quella "
+                    "riga. Nessuna impostazione scende sotto il pareggio atteso: "
+                    "sotto quella riga il bot pagherebbe per operare."
+                ),
+            }
+
+        # Prima le verifiche che possono fallire subito, cosi' l'errore
+        # arriva come messaggio invece che come lavoro fallito in silenzio.
+        store = ParquetStore(supervisor.config.data.parquet_root)
+        if not store.read_candles(
+            symbols=[s.symbol for s in supervisor.config.enabled_symbols]
+        ):
+            return _error(
+                "nessuna candela salvata: esegui prima il passo 2 e scarica lo storico"
+            )
+
+        supervisor.job = job
+
+        async def worker() -> None:
+            try:
+                job.result = await asyncio.to_thread(work)
+                job.state = "completato"
+                job.message = f"{len(job.result['profili'])} impostazioni misurate"
+            except Exception as exc:
+                job.state = "fallito"
+                job.message = f"{type(exc).__name__}: {exc}"
+
+        supervisor.job_task = asyncio.create_task(worker())
+        return _json({"ok": True, "lavoro": job.to_dict()})
+
     async def run_backtest(request: web.Request) -> web.Response:
         if supervisor.job is not None and supervisor.job.is_running:
             return _error(f"c'e' gia' un'operazione in corso: {supervisor.job.name}")
@@ -1172,6 +1246,7 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
     app.router.add_post("/api/capitale/movimento", capital_movement)
     app.router.add_post("/api/scarica-dati", fetch_data)
     app.router.add_post("/api/backtest", run_backtest)
+    app.router.add_post("/api/frequenza", explore_frequency)
     app.router.add_get("/api/lavoro", job_status)
     app.router.add_static("/static/", STATIC_DIR)
     app.on_cleanup.append(on_cleanup)

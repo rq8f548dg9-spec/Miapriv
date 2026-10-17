@@ -99,8 +99,11 @@ backtest:
   end: 2026-06-30T00:00:00Z
   initial_capital_quote: 200
   costs:
-    maker_fee_bps: 1.0
+    # Tariffa standard Binance spot: 0,1% per lato su entrambi.
+    maker_fee_bps: 10.0
     taker_fee_bps: 10.0
+    # 0.25 se paghi le commissioni in BNB. Dichiaralo solo se e' vero.
+    fee_discount_pct: 0.0
     base_slippage_bps: 1.0
     impact_coefficient_bps: 5.0
     reference_depth_quote: 10000

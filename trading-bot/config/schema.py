@@ -401,8 +401,17 @@ class CostsConfig(_Base):
     radice riflette l'impatto concavo osservato sui book reali.
     """
 
-    maker_fee_bps: float = Field(default=1.0, ge=0.0)
+    #: Tariffa standard di Binance spot: 0,1% su entrambi i lati, cioe' 10
+    #: bps per lato. Non e' un dettaglio: con il maker a 1 bp, come era
+    #: prima, qualunque strategia basata su ordini limite sembrerebbe dieci
+    #: volte piu' economica di com'e'. Chi ha un livello VIP abbassa questi
+    #: numeri consapevolmente.
+    maker_fee_bps: float = Field(default=10.0, ge=0.0)
     taker_fee_bps: float = Field(default=10.0, ge=0.0)
+    #: Sconto sulle commissioni, fra 0 e 0,5. Pagarle in BNB vale il 25%
+    #: (0.25). Resta una scelta da dichiarare: darlo per scontato
+    #: significherebbe misurare un conto che non e' il proprio.
+    fee_discount_pct: float = Field(default=0.0, ge=0.0, le=0.5)
     #: Slippage minimo applicato a ogni esecuzione aggressiva.
     base_slippage_bps: float = Field(default=1.0, ge=0.0)
     #: Coefficiente di impatto sul book.

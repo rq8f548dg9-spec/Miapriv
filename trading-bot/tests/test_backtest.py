@@ -61,9 +61,13 @@ class TestCostModel:
         assert double < base * 2
 
     def test_il_maker_paga_meno_del_taker(self, costs: CostModel) -> None:
+        """Non per la commissione: su Binance spot e' la stessa dei due
+        lati. Il vantaggio e' non attraversare lo spread, e si paga con
+        gli ordini che restano sul libro senza essere eseguiti."""
         maker = costs.apply(side=Side.BUY, reference_price=D("100"), quantity=D("1"), is_maker=True)
         taker = costs.apply(side=Side.BUY, reference_price=D("100"), quantity=D("1"))
-        assert maker.fee < taker.fee
+        assert maker.fill_price < taker.fill_price
+        assert maker.fee < taker.fee, "meno slippage, quindi meno controvalore su cui pagare"
 
     def test_costo_del_giro_completo(self, costs: CostModel) -> None:
         """E' la soglia che un segnale deve battere per valere la pena."""
@@ -733,3 +737,32 @@ class TestFlussoOrdiniNelBacktest:
         assert motore.run(candles, trades=list(reversed(flusso))).bars_processed > 0, (
             "l'ordine di ingresso non conta: il motore li riordina"
         )
+
+
+class TestTariffeRealistiche:
+    """Il modello costi dava 1 bp al maker e 10 al taker. Su Binance spot
+    la tariffa standard e' 0,1% su entrambi i lati: con il maker a un
+    decimo del vero, qualunque strategia che poggia sugli ordini limite
+    sembrerebbe dieci volte piu' economica di com'e'. Lo sconto pagando
+    in BNB esiste ed e' del 25%, ma e' una scelta da dichiarare, non un
+    default."""
+
+    def test_la_tariffa_standard_e_uguale_sui_due_lati(self) -> None:
+        costi = CostsConfig()
+        assert costi.maker_fee_bps == 10.0
+        assert costi.taker_fee_bps == 10.0
+
+    def test_il_giro_completo_costa_quanto_due_lati_piu_slippage(self) -> None:
+        modello = CostModel(CostsConfig())
+        giro = modello.round_trip_bps(Decimal("100"))
+        assert 20.0 < giro < 24.0, "due volte 10 bps piu' lo slippage"
+
+    def test_lo_sconto_si_applica_a_entrambe_le_tariffe(self) -> None:
+        """Pagando le commissioni in BNB si risparmia il 25%."""
+        modello = CostModel(CostsConfig(fee_discount_pct=0.25))
+        assert modello.fee_bps(is_maker=False) == pytest.approx(7.5)
+        assert modello.fee_bps(is_maker=True) == pytest.approx(7.5)
+
+    def test_uno_sconto_inventato_viene_rifiutato(self) -> None:
+        with pytest.raises(ValueError):
+            CostsConfig(fee_discount_pct=0.9)

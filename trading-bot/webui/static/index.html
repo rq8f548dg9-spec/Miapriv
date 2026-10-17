@@ -287,6 +287,19 @@
       <div id="backtest-result" class="hidden" style="margin-top:12px"></div>
     </div>
 
+    <div class="step" id="step-frequenza">
+      <div class="step-head"><span class="step-num">4</span>
+        <span class="step-title">Quanto spesso vuoi che operi</span><button type="button" class="info" data-info="frequenza" aria-expanded="false" aria-label="Che cos'è: la scelta della frequenza">i</button></div>
+      <p class="small muted">
+        Misura sullo stesso storico quante operazioni farebbe ogni impostazione e
+        quanto costerebbero. Poi scegli tu: più operazioni significano più
+        commissioni, e la tabella dice quante.
+      </p>
+      <button id="btn-frequenza">Misura le impostazioni</button>
+      <div class="msg" id="msg-frequenza"></div>
+      <div id="frequenza-result" class="hidden" style="margin-top:12px"></div>
+    </div>
+
   </div>
 </section>
 
@@ -493,6 +506,19 @@ const INFO = {
       da solo. I <strong>limiti di rischio non si alzano mai da soli</strong>: restano
       quelli che hai messo nelle impostazioni.`,
     esempio: 'Registrare un movimento è contabilità: il bonifico lo fai tu sull\'exchange, il bot non ha il permesso di prelievo.',
+  },
+  frequenza: {
+    titolo: 'Quanto spesso vuoi che operi',
+    testo: `Ogni giro completo (compra e rivendi) costa circa <strong>22 punti
+      base</strong>, cioè lo 0,22% del valore scambiato, fra commissioni e spread.
+      Cento operazioni al giorno costano quindi il 22% del controvalore scambiato
+      <em>ogni giorno</em>: è il motivo per cui "operare in continuazione" non è
+      gratis, e la tabella lo mette in colonna.<br><br>
+      Le impostazioni cambiano <strong>quanto deve essere forte un segnale</strong>
+      perché valga la pena. Nessuna scende sotto il pareggio atteso: lì sotto il bot
+      pagherebbe per operare, e più opererebbe più pagherebbe. I limiti di rischio
+      (esposizione, stop, kill switch) non vengono toccati da questa scelta.`,
+    esempio: 'Se tutte le righe mostrano zero operazioni, il vantaggio stimato non copre i costi su quei dati: è un\'informazione, non un guasto.',
   },
   attivita: {
     titolo: 'Cosa sta facendo il bot adesso',
@@ -1061,6 +1087,66 @@ $('btn-fetch').onclick = async () => {
     pollJob('msg-data');
   } catch (error) { note('msg-data', error.message, 'err'); }
 };
+
+$('btn-frequenza').onclick = async () => {
+  try {
+    await post('/api/frequenza');
+    note('msg-frequenza', 'Misura in corso…');
+    pollJob('msg-frequenza', renderFrequenza);
+  } catch (error) { note('msg-frequenza', error.message, 'err'); }
+};
+
+function renderFrequenza(risultato) {
+  const box = $('frequenza-result');
+  box.classList.remove('hidden');
+  if (!risultato || !risultato.profili) { box.innerHTML = ''; return; }
+  const righe = risultato.profili.map(function (p) {
+    const esitoClasse = p.esito === 'positivo' ? 'pos' : (p.esito === 'negativo' ? 'neg' : '');
+    return '<tr>'
+      + '<td><strong>' + esc(p.profilo) + '</strong><br><span class="small muted">'
+      + esc(p.descrizione) + '</span></td>'
+      + '<td>' + p.operazioni_al_giorno.toLocaleString('it-IT') + '</td>'
+      + '<td>' + p.operazioni + '</td>'
+      + '<td class="' + esitoClasse + '">' + (p.rendimento >= 0 ? '+' : '')
+      + (100 * p.rendimento).toFixed(2) + '%</td>'
+      + '<td>' + fmt(p.commissioni, 2) + '</td>'
+      + '<td>' + p.costo_giornaliero_pct.toFixed(2) + '%</td>'
+      + '<td class="' + esitoClasse + '">' + esc(p.esito) + '</td>'
+      + '</tr>'
+      + '<tr><td colspan="7" class="small muted">Cosa le ferma: '
+      + esc(p.vincolo_principale || 'niente, operano tutte') + '</td></tr>';
+  }).join('');
+  const orizzonti = (risultato.orizzonti || []).map(function (p) {
+    const esitoClasse = p.esito === 'positivo' ? 'pos' : (p.esito === 'negativo' ? 'neg' : '');
+    return '<tr><td><strong>' + esc(p.orizzonte) + '</strong></td>'
+      + '<td>' + p.operazioni_al_giorno.toLocaleString('it-IT') + '</td>'
+      + '<td>' + p.operazioni + '</td>'
+      + '<td class="' + esitoClasse + '">' + (p.rendimento >= 0 ? '+' : '')
+      + (100 * p.rendimento).toFixed(2) + '%</td>'
+      + '<td class="' + esitoClasse + '">' + esc(p.esito) + '</td></tr>';
+  }).join('');
+  box.innerHTML = '<div class="scroll"><table><thead><tr>'
+    + '<th>Impostazione</th><th>Operazioni al giorno</th><th>Operazioni totali</th>'
+    + '<th>Risultato</th><th>Commissioni</th><th>Costo al giorno</th><th>Esito</th>'
+    + '</tr></thead><tbody>' + righe + '</tbody></table></div>'
+    + (orizzonti
+        ? '<p class="small muted" style="margin-top:14px"><strong>Stessa impostazione, '
+          + 'barre più lunghe.</strong> Su barre da un minuto il movimento atteso è '
+          + 'piccolo rispetto ai costi; allungando la barra cresce il movimento e il '
+          + 'costo resta lo stesso.</p>'
+          + '<div class="scroll"><table><thead><tr><th>Durata della barra</th>'
+          + '<th>Operazioni al giorno</th><th>Operazioni totali</th><th>Risultato</th>'
+          + '<th>Esito</th></tr></thead><tbody>' + orizzonti + '</tbody></table></div>'
+        : '')
+    + ((risultato.orizzonti_saltati || []).length
+        ? '<p class="small muted">Non misurati per dati insufficienti: '
+          + esc(risultato.orizzonti_saltati.join(', ')) + '. Scarica più giorni al passo 2.</p>'
+        : '')
+    + '<p class="small muted">' + esc(risultato.nota || '') + '</p>'
+    + (risultato.con_flusso_ordini ? ''
+       : '<p class="small muted">Misura fatta senza flusso ordini: scaricalo al passo 2 '
+         + 'per una stima più vicina al vero.</p>');
+}
 
 $('btn-backtest').onclick = async () => {
   try {

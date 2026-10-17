@@ -67,7 +67,8 @@ class CostModel:
         )
 
     def fee_bps(self, *, is_maker: bool) -> float:
-        return self.config.maker_fee_bps if is_maker else self.config.taker_fee_bps
+        lorda = self.config.maker_fee_bps if is_maker else self.config.taker_fee_bps
+        return lorda * (1.0 - self.config.fee_discount_pct)
 
     def round_trip_bps(self, notional: Decimal, *, is_maker: bool = False) -> float:
         """Costo di un giro completo (entrata + uscita), in bps.
@@ -75,7 +76,8 @@ class CostModel:
         E' il numero che un segnale deve battere per valere la pena, ed e'
         quello che il risk manager riceve come ``estimated_cost_bps``.
         """
-        return 2.0 * (self.fee_bps(is_maker=is_maker) + self.slippage_bps(notional))
+        slippage = 0.0 if is_maker else self.slippage_bps(notional)
+        return 2.0 * (self.fee_bps(is_maker=is_maker) + slippage)
 
     def apply(
         self,
@@ -98,7 +100,12 @@ class CostModel:
             raise ValueError(f"quantita' {quantity} non positiva")
 
         notional = reference_price * quantity
-        slip_bps = self.slippage_bps(notional, available_depth)
+        # Chi sta fermo sul libro non paga lo spread: lo incassa. Lo
+        # slippage e' il costo di attraversare il book, e un ordine limite
+        # eseguito non lo attraversa. Il prezzo di quella scelta e' altrove,
+        # nell'ordine che non viene eseguito affatto
+        # (``limit_order_reject_rate``).
+        slip_bps = 0.0 if is_maker else self.slippage_bps(notional, available_depth)
         slip_factor = Decimal(str(slip_bps)) / Decimal(10_000)
         direction = Decimal(1) if side is Side.BUY else Decimal(-1)
         fill_price = reference_price * (Decimal(1) + direction * slip_factor)

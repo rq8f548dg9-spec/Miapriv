@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -781,3 +782,75 @@ class TestErroriDelPannelloNonDiventano500:
         risposta = await client.post("/api/scarica-dati", data='{"giorni": 1}')
         assert risposta.status == 400
         assert (await risposta.json())["errore"]
+
+
+class TestEsploratoreFrequenza:
+    """La risposta a «voglio che operi in continuazione» non e' si' o no:
+    e' una tabella. Il pannello deve mostrare quante operazioni produce
+    ogni impostazione e quanto costano, misurate sui dati dell'utente."""
+
+    @pytest.fixture
+    def config_con_dati(self, tmp_path: Path, raw_config: dict[str, Any]) -> Path:
+        from core.types import Candle
+        from data.store import ParquetStore
+        from tests.test_runner import D
+
+        store_path = tmp_path / "store"
+        raw = dict(raw_config)
+        raw["data"] = dict(raw["data"])
+        raw["data"]["parquet_root"] = str(store_path)
+        raw["monitoring"] = dict(raw["monitoring"])
+        raw["monitoring"]["state_path"] = str(tmp_path / "stato" / "bot_state.json")
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+        store = ParquetStore(store_path)
+        prezzo = D("60000")
+        candele = []
+        for i in range(600):
+            prezzo = (prezzo * (D("1.0004") if i % 3 else D("0.9996"))).quantize(D("0.01"))
+            candele.append(
+                Candle(
+                    symbol="BTCUSDT",
+                    open_time_ms=1_700_000_000_000 + i * 60_000,
+                    close_time_ms=1_700_000_000_000 + (i + 1) * 60_000 - 1,
+                    open=prezzo, high=prezzo * D("1.001"), low=prezzo * D("0.999"),
+                    close=prezzo, volume=D("10"), quote_volume=prezzo * D("10"),
+                    trades=20, is_closed=True,
+                )
+            )
+        store.add_candles(candele)
+        store.flush()
+        return path
+
+    @pytest.fixture
+    async def client_con_dati(self, config_con_dati: Path, tmp_path: Path) -> Any:
+        app = create_app(config_con_dati, env_path=tmp_path / ".env")
+        async with TestClient(TestServer(app)) as test_client:
+            yield test_client
+
+    async def test_restituisce_una_riga_per_impostazione(
+        self, client_con_dati: TestClient[Any, Any]
+    ) -> None:
+        avvio = await client_con_dati.post("/api/frequenza", json={})
+        assert avvio.status == 200
+
+        for _ in range(100):
+            stato = await (await client_con_dati.get("/api/stato")).json()
+            lavoro = stato.get("lavoro")
+            if lavoro and lavoro["stato"] != "in corso":
+                break
+            await asyncio.sleep(0.2)
+
+        assert lavoro["stato"] == "completato", lavoro.get("messaggio")
+        righe = lavoro["risultato"]["profili"]
+        assert len(righe) >= 3
+        for riga in righe:
+            assert "operazioni_al_giorno" in riga
+            assert "costo_giro_bps" in riga
+            assert riga["esito"] in {"positivo", "negativo", "insufficiente"}
+
+    async def test_senza_dati_lo_dice(self, client: TestClient[Any, Any]) -> None:
+        risposta = await client.post("/api/frequenza", json={})
+        assert risposta.status == 400
+        assert "storico" in (await risposta.json())["errore"]
