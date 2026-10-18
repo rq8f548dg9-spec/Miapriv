@@ -254,6 +254,7 @@
         <span class="small muted">Le chiavi finiscono in <code>.env</code>, mai nei log.</span>
       </div>
       <div class="msg" id="msg-keys"></div>
+      <p class="small muted" id="keys-paper"></p>
     </div>
 
     <div class="step" id="step-data">
@@ -741,6 +742,17 @@ async function registraMovimento() {
   } catch (error) {
     note('msg-movimento', error.message, 'err');
   }
+}
+
+function renderModalita(s) {
+  const paper = s.modalita === 'paper';
+  const nota = $('keys-paper');
+  nota.textContent = paper
+    ? 'In modalità paper le chiavi non servono: il bot legge i prezzi pubblici del '
+      + 'mercato vero e simula le esecuzioni. Nessun ordine esce dal computer. '
+      + 'Servono solo se passi a testnet.'
+    : '';
+  $('step-keys').classList.toggle('done', paper);
 }
 
 function renderAttivita(s) {
@@ -1252,6 +1264,7 @@ async function refresh() {
     state = await api('/api/stato');
     showError(state.ultimo_errore || '');
     renderHeader(state);
+    renderModalita(state);
     renderAttivita(state);
     renderTiles(state);
     renderPositions(state);

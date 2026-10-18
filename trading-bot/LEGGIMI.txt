@@ -9,18 +9,33 @@ BOT TRADING — come si avvia (Windows)
 2. Si apre da solo il browser sul pannello di controllo.
    Se non si apre, vai a mano su:  http://127.0.0.1:8777
 
-3. Nel pannello segui i tre passi della sezione "Preparazione":
+3. IL BOT PARTE GIA' IN MODALITA' "PAPER"
 
-   Passo 1 — Collega la testnet di Binance
-             Vai su https://testnet.binance.vision
-             Accedi con GitHub, genera le chiavi API e incollale nel pannello.
-             Sono chiavi di PROVA, con denaro finto. Nessun rischio.
+   Paper vuol dire: prezzi veri del mercato vero, ordini simulati dentro il
+   tuo computer. Non servono chiavi, non serve un conto, non si rischia
+   niente. Premi "Avvia il bot" e lo vedi lavorare.
 
-   Passo 2 — Scarica lo storico dei prezzi (bastano 30 giorni).
+   Per vederlo decidere subito, fai prima il passo 2 (scarica lo storico):
+   senza, deve raccogliere 240 candele da un minuto, cioe' quattro ore,
+   prima di poter valutare qualunque cosa.
+
+   Il passo 1 (chiavi) serve SOLO se passi a "testnet", dove gli ordini
+   vengono inviati davvero al conto di prova di Binance.
+
+4. Nel pannello segui i passi della sezione "Preparazione":
+
+   Passo 1 — Chiavi: SALTALO se resti in paper. Serve solo per testnet.
+
+   Passo 2 — Scarica lo storico dei prezzi (30 giorni) e qualche giorno di
+             flusso ordini. Senza, il bot aspetta ore prima di decidere e
+             la prova della strategia e' cieca su meta' di cio' che guarda.
 
    Passo 3 — Prova la strategia: ti dice se regge le commissioni.
 
-4. Poi il pulsante "Avvia il bot" diventa cliccabile.
+   Passo 4 — Quanto spesso vuoi che operi: misura, sui tuoi dati, quante
+             operazioni farebbe ogni impostazione e quanto costerebbero.
+
+5. Premi "Avvia il bot".
 
 Per chiudere tutto: chiudi la finestra nera.
 

@@ -210,7 +210,7 @@ class TestApi:
     async def test_stato_a_bot_fermo(self, client: TestClient[Any, Any]) -> None:
         payload = await (await client.get("/api/stato")).json()
         assert payload["in_esecuzione"] is False
-        assert payload["modalita"] == "testnet"
+        assert payload["modalita"] == "paper"
         assert payload["denaro_reale"] is False
         assert payload["killswitch"]["scattato"] is False
 
@@ -233,10 +233,21 @@ class TestApi:
         assert payload["simboli"]
 
     @pytest.mark.asyncio
-    async def test_avvio_senza_chiavi_rifiutato(self, client: TestClient[Any, Any]) -> None:
-        response = await client.post("/api/avvia")
-        assert response.status == 400
-        assert "chiavi" in (await response.json())["errore"]
+    async def test_avvio_senza_chiavi_rifiutato_dove_servono(
+        self, tmp_path: Path, raw_config: dict[str, Any]
+    ) -> None:
+        """In testnet gli ordini partono davvero, quindi senza chiavi non
+        si parte. In paper le chiavi non esistono e l'avvio e' libero: e'
+        la differenza fra le due modalita'."""
+        raw = dict(raw_config)
+        raw["mode"] = "testnet"
+        percorso = tmp_path / "testnet.yaml"
+        percorso.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        app = create_app(percorso, env_path=tmp_path / ".env")
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/api/avvia")
+            assert response.status == 400
+            assert "chiavi" in (await response.json())["errore"]
 
     @pytest.mark.asyncio
     async def test_chiudi_tutto_a_bot_fermo(self, client: TestClient[Any, Any]) -> None:

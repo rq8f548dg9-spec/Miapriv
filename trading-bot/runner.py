@@ -42,6 +42,7 @@ from execution.binance import AiohttpClient, AmbiguousRequestError, BinanceBroke
 from execution.broker import Broker, BrokerError, PaperBroker
 from execution.idempotency import DuplicateOrderError, OrderRegistry
 from execution.leadership import FileLease, LeaseLostError
+from execution.paper_live import PaperLiveBroker
 from execution.reconcile import Reconciler
 from features.engine import FeatureEngine
 from monitoring.alerts import AlertManager, LogChannel, Severity
@@ -80,6 +81,11 @@ def build_broker(
     live e' gia' stata autorizzata dalla guardia al caricamento della
     configurazione: qui arriva solo se quel controllo e' passato.
     """
+    if config.mode is Mode.PAPER:
+        # Paper: stessi costi del backtest, ma regole e libro presi dal
+        # mercato vero. Gli ordini non escono dal computer, quindi non
+        # servono chiavi e non c'e' niente da autorizzare.
+        return PaperLiveBroker.costruisci(config=config, clock=clock)
     if config.mode is Mode.BACKTEST:
         costs = config.backtest.costs if config.backtest else CostsConfig()
         return PaperBroker(
@@ -435,6 +441,11 @@ class TradingBot:
     def on_trade(self, trade: Trade) -> None:
         self.features.on_trade(trade)
         self.last_prices[trade.symbol] = trade.price
+        # Il broker simulato esegue al prezzo che conosce: senza questa
+        # riga, in paper resterebbe fermo al prezzo iniziale e ogni
+        # esecuzione sarebbe inventata.
+        if isinstance(self.broker, PaperBroker):
+            self.broker.set_price(trade.symbol, trade.price)
         # Il mark segue i trade, non solo le candele chiuse: con l'equity
         # ferma fino al minuto successivo, drawdown e limiti leggono uno
         # stato vecchio proprio quando il prezzo si muove in fretta.

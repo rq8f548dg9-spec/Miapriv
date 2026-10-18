@@ -43,6 +43,19 @@ def config() -> AppConfig:
 
 
 @pytest.fixture
+def config_testnet(config: AppConfig) -> AppConfig:
+    """Configurazione che tocca davvero l'exchange.
+
+    Il file versionato ora parte in paper, dove non si invia nulla: i
+    test che riguardano la riconciliazione con i saldi reali devono
+    dirlo esplicitamente invece di ereditarlo.
+    """
+    raw = config.model_dump()
+    raw["mode"] = "testnet"
+    return AppConfig.model_validate(raw)
+
+
+@pytest.fixture
 def bot(config: AppConfig, tmp_path: Path) -> TradingBot:
     return make_bot(config, tmp_path)
 
@@ -849,11 +862,12 @@ class TestChiusuraInterrotta:
 
     @pytest.mark.asyncio
     async def test_una_posizione_viva_riarma_la_chiusura_anche_senza_il_flag(
-        self, config: AppConfig, tmp_path: Path
+        self, config_testnet: AppConfig, tmp_path: Path
     ) -> None:
         """Il crash puo' precedere il salvataggio del flag. La verita'
         sull'inventario arriva dall'exchange: se lo stop e' scattato e sul
         conto c'e' ancora una posizione del bot, si chiude."""
+        config = config_testnet
         primo = make_bot(config, tmp_path)
         primo.risk.killswitch.trip_manually("stop", primo.clock.now_ms())
         primo.risk.killswitch.mark_flattened()  # il flag dice "fatto"

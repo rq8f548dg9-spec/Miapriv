@@ -61,6 +61,11 @@ class ConfigError(ValueError):
 
 class Mode(StrEnum):
     BACKTEST = "backtest"
+    #: Dati del mercato vero, esecuzioni simulate, nessuna chiave. La
+    #: testnet di Binance e' un mercato quasi deserto, e il bot decide
+    #: guardando il flusso degli scambi: provarlo li' dice poco. Qui i
+    #: dati sono quelli veri e gli ordini non escono dal computer.
+    PAPER = "paper"
     TESTNET = "testnet"
     LIVE = "live"
 
@@ -70,7 +75,17 @@ class Mode(StrEnum):
 
     @property
     def touches_exchange(self) -> bool:
+        """Vero se dall'exchange possono passare ordini nostri.
+
+        Paper e' fuori: legge e basta. E' la proprieta' che rende la
+        modalita' sicura, piu' di qualunque dichiarazione.
+        """
         return self in (Mode.TESTNET, Mode.LIVE)
+
+    @property
+    def usa_dati_dal_vivo(self) -> bool:
+        """Vero se i dati arrivano dal mercato adesso, non da un file."""
+        return self in (Mode.PAPER, Mode.TESTNET, Mode.LIVE)
 
 
 class _Base(BaseModel):
@@ -164,13 +179,19 @@ class ExchangeConfig(_Base):
         return self
 
     def rest_url(self, mode: Mode) -> str:
-        """URL REST per la modalita' indicata. Unico punto che sceglie fra i due."""
-        if mode is Mode.LIVE:
+        """URL REST per la modalita' indicata. Unico punto che sceglie.
+
+        Paper usa gli endpoint pubblici di produzione: i prezzi devono
+        essere quelli veri, altrimenti la prova non dice niente. Da li'
+        passano solo letture, perche' in paper nessun ordine viene
+        firmato.
+        """
+        if mode in (Mode.LIVE, Mode.PAPER):
             return self.live_rest_url
         return self.testnet_rest_url
 
     def ws_url(self, mode: Mode) -> str:
-        if mode is Mode.LIVE:
+        if mode in (Mode.LIVE, Mode.PAPER):
             return self.live_ws_url
         return self.testnet_ws_url
 

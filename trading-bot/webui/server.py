@@ -126,7 +126,10 @@ class BotSupervisor:
         return self.config
 
     def credentials_present(self) -> bool:
-        if self.config.mode is Mode.BACKTEST:
+        # Paper non firma niente: non ci sono chiavi da avere, e chiederle
+        # sarebbe un ostacolo per l'unica modalita' che si puo' avviare
+        # senza rischiare nulla.
+        if self.config.mode in (Mode.BACKTEST, Mode.PAPER):
             return True
         try:
             return load_credentials(self.config.mode) is not None
@@ -420,7 +423,9 @@ class BotSupervisor:
         self.reload_config()
         if self.config.mode is Mode.BACKTEST:
             raise UiError(
-                "la modalita' e' 'backtest': per far girare il bot imposta 'testnet'"
+                "la modalita' e' 'backtest': per far girare il bot imposta "
+                "'paper' (mercato vero, ordini simulati, nessuna chiave) "
+                "oppure 'testnet'"
             )
         if not self.credentials_present():
             raise UiError(

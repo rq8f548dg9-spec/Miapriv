@@ -263,7 +263,11 @@ class TestSigning:
     def test_lurl_dipende_dalla_modalita(
         self, config: AppConfig, credentials: Credentials
     ) -> None:
-        testnet = make_broker(config, credentials, FakeHttp([]))
+        raw = config.model_dump()
+        raw["mode"] = "testnet"
+        testnet = make_broker(
+            type(config).model_validate(raw), credentials, FakeHttp([])
+        )
         assert "testnet" in testnet.base_url
 
 

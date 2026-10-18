@@ -76,7 +76,10 @@ def load_credentials(mode: Mode) -> Credentials | None:
     ``backtest`` non ne usa: restituisce ``None`` invece di chiedere chiavi che
     non servono. Le chiavi live si leggono solo se la guardia e' soddisfatta.
     """
-    if mode is Mode.BACKTEST:
+    if mode in (Mode.BACKTEST, Mode.PAPER):
+        # Paper non firma niente: chiedere chiavi per non usarle sarebbe
+        # un rischio gratuito, oltre che un ostacolo per chi vuole solo
+        # vedere il bot all'opera.
         return None
 
     if mode is Mode.LIVE:

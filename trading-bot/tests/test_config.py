@@ -29,19 +29,32 @@ from tests.conftest import WriteConfig
 class TestDefaultConfig:
     def test_config_di_default_e_valida(self) -> None:
         config = load_config(Path("config/config.yaml"))
-        assert config.mode is Mode.TESTNET
+        # Paper: mercato vero, ordini simulati, nessuna chiave. E' la sola
+        # modalita' che una persona possa avviare senza rischiare niente,
+        # quindi e' quella con cui il file versionato arriva.
+        assert config.mode is Mode.PAPER
 
-    def test_il_default_del_repository_e_testnet(self) -> None:
-        """Il file versionato non deve mai arrivare su live per distrazione."""
+    def test_il_default_del_repository_non_manda_ordini(self) -> None:
+        """Il file versionato non deve mai arrivare su live per distrazione,
+        ne' inviare ordini a un exchange appena qualcuno preme avvia."""
         config = load_config(Path("config/config.yaml"))
         assert not config.mode.uses_real_money
+        assert not config.mode.touches_exchange
 
     def test_url_coerente_con_la_modalita(
         self, base_config_dict: dict[str, Any], write_config: WriteConfig
     ) -> None:
+        base_config_dict["mode"] = "testnet"
         testnet = load_config(write_config(base_config_dict))
         assert "testnet" in testnet.rest_url
         assert "testnet" in testnet.ws_url
+
+        # Paper legge il mercato vero: se puntasse alla testnet mostrerebbe
+        # i prezzi di un mercato deserto spacciandoli per quelli veri.
+        base_config_dict["mode"] = "paper"
+        paper = load_config(write_config(base_config_dict, "paper.yaml"))
+        assert "testnet" not in paper.rest_url
+        assert "testnet" not in paper.ws_url
 
     @pytest.mark.parametrize(
         "campo,valore",
@@ -61,6 +74,7 @@ class TestDefaultConfig:
         """Con mode=testnet e l'endpoint di produzione, il bot opererebbe con
         denaro vero credendo di provare. La guardia sul denaro reale non
         guarda l'indirizzo: deve guardarlo la configurazione."""
+        base_config_dict["mode"] = "testnet"
         base_config_dict["exchange"][campo] = valore
         with pytest.raises(ValueError, match=r"produzione|testnet"):
             load_config(write_config(base_config_dict))
@@ -70,6 +84,7 @@ class TestDefaultConfig:
     ) -> None:
         """Puntare a un server finto sul proprio computer e' il modo normale
         di provare il bot senza toccare Binance."""
+        base_config_dict["mode"] = "testnet"
         base_config_dict["exchange"]["testnet_rest_url"] = "http://127.0.0.1:8080"
         base_config_dict["exchange"]["testnet_ws_url"] = "ws://127.0.0.1:8080/stream"
         config = load_config(write_config(base_config_dict))

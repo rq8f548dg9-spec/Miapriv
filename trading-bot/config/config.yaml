@@ -6,7 +6,10 @@
 # oltre a questo campo, la variabile d'ambiente I_UNDERSTAND_LIVE_TRADING_RISK=yes
 # (cfr. config/live_guard.py).
 # ---------------------------------------------------------------------------
-mode: testnet
+# paper   = mercato vero, ordini simulati, nessuna chiave: si avvia subito
+# testnet = ordini veri sul conto di prova di Binance (servono le chiavi)
+# live    = denaro vero, e richiede anche una variabile d'ambiente apposta
+mode: paper
 
 # Capitale di riferimento espresso nella valuta quote.
 # Nota: la testnet Binance Spot quota in USDT, non in EUR. I 200 EUR del piano

@@ -360,11 +360,24 @@ class TestIngestor:
         await ingestor.run()
         assert visti == [atteso]
 
-    def test_url_usa_lendpoint_testnet(self, config: AppConfig) -> None:
-        ingestor = MarketDataIngestor(
+    def test_lurl_del_flusso_segue_la_modalita(self, config: AppConfig) -> None:
+        """In paper i prezzi devono essere quelli veri, in testnet quelli
+        del conto di prova: sbagliare flusso vuol dire guardare un mercato
+        e operare su un altro."""
+        paper = MarketDataIngestor(
             config, SimulatedClock(NOW), RecordingHandler(), max_cycles=0
         )
-        assert "testnet" in ingestor.stream_url()
+        assert "testnet" not in paper.stream_url()
+
+        raw = config.model_dump()
+        raw["mode"] = "testnet"
+        su_testnet = MarketDataIngestor(
+            type(config).model_validate(raw),
+            SimulatedClock(NOW),
+            RecordingHandler(),
+            max_cycles=0,
+        )
+        assert "testnet" in su_testnet.stream_url()
 
     @pytest.mark.asyncio
     async def test_consegna_i_messaggi_allhandler(self, config: AppConfig) -> None:
