@@ -39,6 +39,7 @@ from aiohttp import web
 from backtest.engine import BacktestEngine
 from backtest.frequenza import esplora, esplora_orizzonti
 from backtest.metrics import assess
+from backtest.scenari import simula_scenari
 from config.credentials import (
     TESTNET_KEY_VAR,
     TESTNET_SECRET_VAR,
@@ -1157,7 +1158,16 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
                     key = re.sub(r"[-+]?\d[\d.,]*", "N", reason.split("(")[0]).strip()[:90]
                     entry = motivi.setdefault(key, {"conteggio": 0, "esempio": reason})
                     entry["conteggio"] = int(entry["conteggio"]) + 1
+            # Che cosa poteva succedere, non solo cosa e' successo: con
+            # poche operazioni la simulazione lo dichiara invece di
+            # produrre percentili che sembrano una misura.
+            scenari = simula_scenari(
+                result.trades,
+                capitale=config.capital_quote,
+                limite_perdita=config.risk.killswitch.max_daily_drawdown_pct,
+            )
             payload: dict[str, Any] = {
+                "scenari": scenari.to_dict(),
                 "periodo": {
                     "da": ms_to_datetime(candles[0].open_time_ms).strftime("%d/%m/%Y"),
                     "a": ms_to_datetime(candles[-1].close_time_ms).strftime("%d/%m/%Y"),

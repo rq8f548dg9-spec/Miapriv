@@ -1236,7 +1236,39 @@ function renderBacktest(r) {
       <p class="small muted" style="margin:4px 0 8px">Un esempio per tipo, con quante
       volte è successo.</p>
       <div class="scroll"><table><thead><tr><th>Motivo</th>
-      <th class="num">Volte</th></tr></thead><tbody>${reasons}</tbody></table></div>` : ''}`;
+      <th class="num">Volte</th></tr></thead><tbody>${reasons}</tbody></table></div>` : ''}
+    ${renderScenari(r.scenari)}`;
+}
+
+function renderScenari(sc) {
+  if (!sc) return '';
+  if (!sc.affidabile) {
+    return '<h3 style="margin-top:14px">Scenari possibili</h3>'
+      + '<p class="small muted">' + esc(sc.spiegazione) + '</p>';
+  }
+  const p = sc.percentili;
+  const stop = sc.probabilita_stop === null || sc.probabilita_stop === undefined
+    ? '—'
+    : pct(sc.probabilita_stop);
+  return '<h3 style="margin-top:14px">Scenari possibili</h3>'
+    + '<p class="small muted" style="margin:4px 0 8px">Il backtest racconta la storia '
+    + 'capitata. Qui le operazioni osservate vengono rimescolate a blocchi (per non '
+    + 'spezzare le serie di perdite) in ' + sc.percorsi + ' storie diverse da '
+    + sc.orizzonte + ' operazioni ciascuna.</p>'
+    + '<div class="tiles">'
+    + tile('Caso tipico', pct(p.p50), 'metà degli scenari sta sopra',
+           p.p50 > 0 ? 'pos' : (p.p50 < 0 ? 'neg' : ''))
+    + tile('Scenario brutto', pct(p.p05), 'peggio di così solo 1 volta su 20',
+           p.p05 < 0 ? 'neg' : '')
+    + tile('Scenario buono', pct(p.p95), 'meglio di così solo 1 volta su 20',
+           p.p95 > 0 ? 'pos' : '')
+    + tile('Finisce in perdita', pct(sc.probabilita_perdita), 'quota di scenari',
+           sc.probabilita_perdita > 0.5 ? 'neg' : '')
+    + tile('Il bot si ferma', stop, 'tocca il limite di perdita')
+    + tile('Calo peggiore tipico', pct(sc.calo_massimo.p50),
+           'nel caso brutto ' + pct(sc.calo_massimo.p95))
+    + '</div>'
+    + '<p class="small muted">' + esc(sc.spiegazione) + '</p>';
 }
 
 $('btn-start').onclick = async () => {

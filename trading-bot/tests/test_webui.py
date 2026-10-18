@@ -865,3 +865,24 @@ class TestEsploratoreFrequenza:
         risposta = await client.post("/api/frequenza", json={})
         assert risposta.status == 400
         assert "storico" in (await risposta.json())["errore"]
+
+
+class TestScenariNelPannello:
+    """Un backtest racconta la storia capitata. Il pannello deve dire
+    anche quante storie diverse erano possibili: con un campione piccolo
+    lo dichiara invece di inventare percentili."""
+
+    async def test_la_prova_riporta_gli_scenari(
+        self, client: TestClient[Any, Any], tmp_path: Path
+    ) -> None:
+        from backtest.scenari import simula_scenari
+        from core.portfolio import TradeResult
+        from tests.test_runner import D
+
+        operazioni = [
+            TradeResult(symbol="BTCUSDT", ts_ms=i, realized_pnl=D("1" if i % 3 else "-1"))
+            for i in range(60)
+        ]
+        risultato = simula_scenari(operazioni, capitale=D("200"), percorsi=200, seed=1)
+        assert risultato.affidabile
+        assert "percentili" in risultato.to_dict()
