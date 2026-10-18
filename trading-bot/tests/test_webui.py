@@ -930,3 +930,188 @@ class TestChiaviInPaper:
             # Senza chiavi salvate deve dire che mancano, non che la
             # modalita' non le usa.
             assert "chiav" in messaggio.lower()
+
+
+class TestCapitaleModificabile:
+    """Cambiare il capitale nelle impostazioni e vederlo tornare al
+    valore di prima appena si preme Avvia: e' quello che succedeva da
+    quando il registro e' diventato la verita' sul patrimonio. Il
+    registro ha ragione, ma la casella deve funzionare lo stesso."""
+
+    @pytest.fixture
+    def config_isolato(self, tmp_path: Path, raw_config: dict[str, Any]) -> Path:
+        raw = dict(raw_config)
+        raw["monitoring"] = dict(raw["monitoring"])
+        raw["monitoring"]["state_path"] = str(tmp_path / "stato" / "bot_state.json")
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        return path
+
+    @pytest.fixture
+    async def client_isolato(self, config_isolato: Path, tmp_path: Path) -> Any:
+        app = create_app(config_isolato, env_path=tmp_path / ".env")
+        async with TestClient(TestServer(app)) as test_client:
+            yield test_client
+
+    async def test_il_capitale_cambiato_vale_davvero(
+        self, client_isolato: TestClient[Any, Any]
+    ) -> None:
+        # Il registro e' gia' stato aperto, come succede appena si apre il
+        # pannello: e' esattamente il caso in cui la casella non funzionava.
+        aperto = await (await client_isolato.get("/api/capitale")).json()
+        assert aperto["in_gestione"] == "200"
+
+        risposta = await client_isolato.post("/api/config", json={"capitale": 500})
+        assert risposta.status == 200, await risposta.text()
+
+        capitale = await (await client_isolato.get("/api/capitale")).json()
+        assert capitale["in_gestione"] == "500", (
+            "la casella deve spostare anche il capitale in gestione, "
+            "altrimenti all'avvio torna il valore di prima"
+        )
+
+    async def test_abbassarlo_funziona_allo_stesso_modo(
+        self, client_isolato: TestClient[Any, Any]
+    ) -> None:
+        await (await client_isolato.get("/api/capitale")).json()
+        await client_isolato.post("/api/config", json={"capitale": 500})
+        await client_isolato.post("/api/config", json={"capitale": 150})
+        capitale = await (await client_isolato.get("/api/capitale")).json()
+        assert capitale["in_gestione"] == "150"
+
+    async def test_il_movimento_resta_scritto(
+        self, client_isolato: TestClient[Any, Any]
+    ) -> None:
+        """Il patrimonio non cambia mai senza che si veda perche'."""
+        await (await client_isolato.get("/api/capitale")).json()
+        await client_isolato.post("/api/config", json={"capitale": 350})
+        capitale = await (await client_isolato.get("/api/capitale")).json()
+        note = [m["nota"] for m in capitale["movimenti"]]
+        assert any("pannello" in n or "impostazioni" in n for n in note)
+
+
+class TestPrezziDalVivo:
+    """Il pannello mostrava solo la curva del capitale, che resta piatta
+    finche' non si chiude un'operazione: con il bot acceso e nessuna
+    operazione, sembra tutto fermo. Il prezzo invece si muove sempre, ed
+    e' la prova che i dati stanno arrivando."""
+
+    async def test_a_bot_fermo_la_serie_e_vuota(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        payload = await (await client.get("/api/prezzi")).json()
+        assert payload["serie"] == []
+
+    async def test_raccoglie_un_punto_per_simbolo_a_ogni_giro(
+        self, config_file: Path, tmp_path: Path
+    ) -> None:
+        from config.schema import load_config
+        from tests.test_runner import D, make_bot
+
+        supervisor = BotSupervisor(
+            config_path=config_file, config=load_config(config_file)
+        )
+        bot = make_bot(supervisor.config, tmp_path)
+        bot.running = True
+        supervisor.bot = bot
+
+        for prezzo in ("60000", "60100", "60050"):
+            bot.last_prices["BTCUSDT"] = D(prezzo)
+            supervisor.campiona_prezzi()
+
+        serie = {s["simbolo"]: s for s in supervisor.prezzi()["serie"]}
+        assert [p["prezzo"] for p in serie["BTCUSDT"]["punti"]] == [
+            "60000", "60100", "60050"
+        ]
+
+    def test_la_serie_non_cresce_all_infinito(
+        self, config_file: Path, tmp_path: Path
+    ) -> None:
+        from config.schema import load_config
+        from tests.test_runner import D, make_bot
+
+        supervisor = BotSupervisor(
+            config_path=config_file, config=load_config(config_file)
+        )
+        bot = make_bot(supervisor.config, tmp_path)
+        bot.running = True
+        supervisor.bot = bot
+
+        for i in range(supervisor.MAX_PUNTI_PREZZO + 200):
+            bot.last_prices["BTCUSDT"] = D(60_000 + i)
+            supervisor.campiona_prezzi()
+
+        punti = supervisor.prezzi()["serie"][0]["punti"]
+        assert len(punti) <= supervisor.MAX_PUNTI_PREZZO
+        assert punti[-1]["prezzo"] == str(
+            D(60_000 + supervisor.MAX_PUNTI_PREZZO + 199)
+        )
+
+
+class TestCommentiPreservati:
+    """Salvare le impostazioni riscriveva il file con yaml.safe_dump, che
+    butta via tutti i commenti. Quel file e' pieno di spiegazioni scritte
+    apposta per chi lo apre: perderle a ogni salvataggio significa
+    svuotare la documentazione proprio di chi ne ha piu' bisogno."""
+
+    def test_cambia_solo_il_valore_e_lascia_il_resto(self, tmp_path: Path) -> None:
+        from webui.server import patch_yaml_value
+
+        testo = """# commento in testa
+mode: paper
+
+risk:
+  sizing:
+    # questo numero non si tocca alla leggera
+    target_order_quote: 6
+    max_order_quote: 20
+"""
+        nuovo = patch_yaml_value(testo, ("risk", "sizing", "target_order_quote"), 9)
+
+        assert "# commento in testa" in nuovo
+        assert "# questo numero non si tocca alla leggera" in nuovo
+        assert "target_order_quote: 9" in nuovo
+        assert "max_order_quote: 20" in nuovo
+        assert "mode: paper" in nuovo
+
+    def test_non_confonde_chiavi_omonime_di_sezioni_diverse(
+        self, tmp_path: Path
+    ) -> None:
+        testo = """a:
+  soglia: 1
+b:
+  soglia: 2
+"""
+        from webui.server import patch_yaml_value
+
+        nuovo = patch_yaml_value(testo, ("b", "soglia"), 99)
+        assert "  soglia: 1" in nuovo
+        assert "  soglia: 99" in nuovo
+
+    def test_una_chiave_assente_viene_segnalata(self) -> None:
+        from webui.server import UiError, patch_yaml_value
+
+        with pytest.raises(UiError, match="non trovata"):
+            patch_yaml_value("a: 1\n", ("b", "c"), 2)
+
+    async def test_il_salvataggio_dal_pannello_conserva_i_commenti(
+        self, tmp_path: Path, raw_config: dict[str, Any]
+    ) -> None:
+        import asyncio as _asyncio
+
+        originale = await _asyncio.to_thread(CONFIG_PATH.read_text, encoding="utf-8")
+        percorso = tmp_path / "config.yaml"
+        await _asyncio.to_thread(percorso.write_text, originale, encoding="utf-8")
+
+        app = create_app(percorso, env_path=tmp_path / ".env")
+        async with TestClient(TestServer(app)) as client:
+            risposta = await client.post("/api/config", json={"ordine_target": 7})
+            assert risposta.status == 200, await risposta.text()
+
+        dopo = await _asyncio.to_thread(percorso.read_text, encoding="utf-8")
+        commenti_prima = [r for r in originale.splitlines() if r.strip().startswith("#")]
+        commenti_dopo = [r for r in dopo.splitlines() if r.strip().startswith("#")]
+        assert len(commenti_dopo) == len(commenti_prima), (
+            "i commenti del file di configurazione non devono sparire"
+        )
+        assert "target_order_quote: 7" in dopo

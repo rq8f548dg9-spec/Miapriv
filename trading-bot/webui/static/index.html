@@ -349,6 +349,13 @@
   </div>
 </section>
 
+<!-- ───────────────── prezzi dal vivo ───────────────── -->
+<section class="card" id="card-prezzi">
+  <h2>Prezzi dal vivo<button type="button" class="info" data-info="prezzi" aria-expanded="false" aria-label="Che cos'è: i prezzi dal vivo">i</button></h2>
+  <p class="small muted" id="prezzi-nota">Compaiono quando il bot è in esecuzione: è la prova che i dati stanno arrivando.</p>
+  <div id="prezzi-grafici"></div>
+</section>
+
 <!-- ───────────────── equity ───────────────── -->
 <section class="card">
   <div class="chart-head">
@@ -433,6 +440,15 @@ const esc = (value) =>
    un fumetto solo, riposizionato ogni volta. */
 
 const INFO = {
+  prezzi: {
+    titolo: 'Prezzi dal vivo',
+    testo: `La curva del capitale resta piatta finché non si chiude un'operazione:
+      con il bot acceso e nessuna operazione sembra tutto fermo. Il prezzo invece si
+      muove sempre, e vederlo muoversi è la prova che i dati stanno arrivando dal
+      mercato. Una linea per coppia, aggiornata ogni pochi secondi, con minimo,
+      massimo e variazione da quando hai avviato.`,
+    esempio: 'Se la linea si ferma, il flusso è caduto: lo trovi scritto anche nel riquadro «Cosa sta succedendo».',
+  },
   capitale: {
     titolo: 'Capitale che il bot può usare',
     testo: `È un <strong>tetto</strong>, non una stima. Il conto di prova di Binance
@@ -736,6 +752,58 @@ function tile(label, value, sub, cls) {
   return `<div class="tile"><div class="label">${label}</div>
     <div class="value ${cls || ''}">${value}</div>
     <div class="sub">${sub || ''}</div></div>`;
+}
+
+async function refreshPrezzi() {
+  if (!state || !state.in_esecuzione) return;
+  try {
+    const dati = await api('/api/prezzi');
+    const serie = dati.serie || [];
+    if (!serie.length) {
+      $('prezzi-nota').textContent =
+        'Nessun prezzo ancora: il bot si è appena avviato o il flusso non è arrivato.';
+      $('prezzi-grafici').innerHTML = '';
+      return;
+    }
+    $('prezzi-nota').textContent =
+      serie.map(function (s) {
+        const ultimi = s.punti;
+        const primo = Number(ultimi[0].prezzo);
+        const ora = Number(ultimi.at(-1).prezzo);
+        const var_ = primo ? (100 * (ora - primo) / primo) : 0;
+        return s.simbolo + ' ' + fmt(ora) + ' (' + (var_ >= 0 ? '+' : '')
+          + var_.toFixed(2) + '% da inizio sessione)';
+      }).join(' · ');
+    $('prezzi-grafici').innerHTML = serie.map(sparkline).join('');
+  } catch (_) { /* il prossimo giro riprova */ }
+}
+
+function sparkline(serie) {
+  const punti = serie.punti;
+  if (punti.length < 2) return '';
+  const valori = punti.map(function (p) { return Number(p.prezzo); });
+  const minimo = Math.min.apply(null, valori);
+  const massimo = Math.max.apply(null, valori);
+  const spazio = (massimo - minimo) || Math.max(massimo * 0.0005, 0.01);
+  const w = 720, h = 90, pad = 6;
+  const X = function (i) { return pad + (i / (punti.length - 1)) * (w - 2 * pad); };
+  const Y = function (v) {
+    return pad + (h - 2 * pad) * (1 - (v - minimo + spazio * 0.1) / (spazio * 1.2));
+  };
+  const d = valori.map(function (v, i) {
+    return (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1);
+  }).join(' ');
+  const salito = valori.at(-1) >= valori[0];
+  const colore = salito ? 'var(--pos, #2e7d32)' : 'var(--neg, #c62828)';
+  return '<div style="margin:10px 0">'
+    + '<div class="small muted" style="display:flex;justify-content:space-between">'
+    + '<span><strong>' + esc(serie.simbolo) + '</strong></span>'
+    + '<span>min ' + fmt(minimo) + ' · max ' + fmt(massimo) + ' · '
+    + punti.length + ' rilevazioni</span></div>'
+    + '<svg viewBox="0 0 ' + w + ' ' + h + '" style="width:100%;height:90px" role="img" '
+    + 'aria-label="Andamento del prezzo di ' + esc(serie.simbolo) + '">'
+    + '<path d="' + d + '" fill="none" stroke="' + colore + '" stroke-width="2" '
+    + 'stroke-linejoin="round" stroke-linecap="round"/></svg></div>';
 }
 
 async function refreshCapitale() {
@@ -1081,9 +1149,12 @@ $('btn-save-settings').onclick = async () => {
     changes[key] = raw.includes('.') ? Number(raw) : parseInt(raw, 10);
   }
   try {
-    await post('/api/config', changes);
-    note('msg-settings', 'Impostazioni salvate.', 'ok');
+    const risposta = await post('/api/config', changes);
+    note('msg-settings',
+         (risposta && risposta.avviso) ? risposta.avviso : 'Impostazioni salvate.',
+         (risposta && risposta.avviso) ? 'warn' : 'ok');
     await loadSettings();
+    await refreshCapitale();
   } catch (error) {
     note('msg-settings', error.message, 'err');
   }
@@ -1413,11 +1484,13 @@ async function refreshSlow() {
   renderDecisions();
   await refresh();
   await refreshCapitale();
+  await refreshPrezzi();
   await refreshSlow();
   $('btn-movimento').addEventListener('click', registraMovimento);
   setInterval(refresh, 2000);
   setInterval(refreshSlow, 5000);
   setInterval(refreshCapitale, 10000);
+  setInterval(refreshPrezzi, 4000);
 })();
 </script>
 </body>

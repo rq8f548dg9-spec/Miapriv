@@ -64,6 +64,7 @@ __all__ = [
     "create_app",
     "errori_leggibili",
     "friendly_validation_message",
+    "patch_yaml_value",
     "run_ui",
     "same_origin_only",
 ]
@@ -115,6 +116,12 @@ class BotSupervisor:
     task: asyncio.Task[None] | None = None
     sampler: asyncio.Task[None] | None = None
     equity_history: list[tuple[TimestampMs, str]] = field(default_factory=list)
+    #: Prezzo di ogni simbolo nel tempo. La curva del capitale resta
+    #: piatta finche' non si chiude un'operazione: il prezzo invece si
+    #: muove sempre, ed e' la prova che i dati stanno arrivando.
+    price_history: dict[str, list[tuple[TimestampMs, str]]] = field(
+        default_factory=dict
+    )
     job: Job | None = None
     #: Riferimento al task del lavoro in corso: senza, il garbage collector
     #: puo' raccoglierlo a meta' e il lavoro sparisce in silenzio.
@@ -256,6 +263,74 @@ class BotSupervisor:
             "ultima_decisione_ms": ultima.ts_ms if ultima else None,
             "ultimo_motivo": motivo,
         }
+
+    MAX_PUNTI_PREZZO = 600
+
+    def campiona_prezzi(self) -> None:
+        """Aggiunge un punto per simbolo alla serie dei prezzi."""
+        bot = self.bot
+        if bot is None:
+            return
+        adesso = bot.clock.now_ms()
+        for symbol, prezzo in bot.last_prices.items():
+            serie = self.price_history.setdefault(symbol, [])
+            serie.append((adesso, str(prezzo)))
+            if len(serie) > self.MAX_PUNTI_PREZZO:
+                del serie[: len(serie) - self.MAX_PUNTI_PREZZO]
+
+    def prezzi(self) -> dict[str, Any]:
+        """Serie dei prezzi, pronte per il grafico."""
+        return {
+            "serie": [
+                {
+                    "simbolo": symbol,
+                    "punti": [{"t": ts, "prezzo": valore} for ts, valore in punti],
+                }
+                for symbol, punti in sorted(self.price_history.items())
+                if punti
+            ]
+        }
+
+    def allinea_capitale(self, nuovo: Decimal) -> str | None:
+        """Porta il capitale in gestione al valore scelto, se si puo'.
+
+        Il registro e' la verita' sul patrimonio, ed e' giusto: altrimenti
+        il guadagno non si reinveste. Ma finche' non e' successo niente,
+        la casella delle impostazioni deve poter fare quello che dice,
+        altrimenti l'utente la cambia, preme avvia e vede tornare il
+        valore di prima senza capire perche'.
+
+        La differenza si scrive come movimento, non si sovrascrive la
+        storia: il patrimonio non cambia mai senza che si veda perche'.
+        Dopo le prime operazioni la casella non basta piu', e il metodo
+        lo dice invece di fingere.
+        """
+        ledger = self.registro()
+        if any(
+            evento.kind is EventKind.ESECUZIONE for evento in ledger.events()
+        ):
+            return (
+                "il bot ha gia' operato: da qui il capitale non si riscrive. "
+                "Per aggiungere o togliere denaro usa «Capitale in gestione» "
+                "e registra un movimento."
+            )
+        corrente = ledger.replay(self.config.quote_asset).capitale_in_gestione
+        differenza = nuovo - corrente
+        if differenza == 0:
+            return None
+        adesso = int(time.time() * 1000)
+        try:
+            if differenza > 0:
+                ledger.conferimento(
+                    differenza, ts_ms=adesso, note="adeguamento dalle impostazioni"
+                )
+            else:
+                ledger.prelievo(
+                    -differenza, ts_ms=adesso, note="adeguamento dalle impostazioni"
+                )
+        except LedgerError as exc:
+            return str(exc)
+        return None
 
     def registro(self) -> EventLedger:
         """Registro del patrimonio, sempre quello del bot."""
@@ -443,6 +518,7 @@ class BotSupervisor:
         self.bot = build_bot(self.config)
         self.started_at_ms = self.bot.clock.now_ms()
         self.equity_history.clear()
+        self.price_history.clear()
         self.task = asyncio.create_task(self._run_bot())
         self.sampler = asyncio.create_task(self._sample_equity())
         logger.info("bot avviato dal pannello in modalita' %s", self.config.mode.value)
@@ -458,11 +534,12 @@ class BotSupervisor:
             logger.exception("il bot si e' fermato per un errore")
 
     async def _sample_equity(self) -> None:
-        """Campiona l'equity per il grafico, a intervalli regolari."""
+        """Campiona equity e prezzi per i grafici, a intervalli regolari."""
         while True:
             await asyncio.sleep(5)
             if self.bot is None:
                 continue
+            self.campiona_prezzi()
             point = (self.bot.clock.now_ms(), str(self.bot.portfolio.equity))
             self.equity_history.append(point)
             if len(self.equity_history) > MAX_EQUITY_POINTS:
@@ -644,6 +721,73 @@ EDITABLE_FIELDS: dict[str, tuple[str, ...]] = {
     "probabilita_minima": ("signals", "min_probability"),
     "edge_minimo_bps": ("signals", "min_expected_edge_bps"),
 }
+
+
+def _patch_simbolo(testo: str, simbolo: str, acceso: bool) -> str:
+    """Accende o spegne una coppia lasciando il resto del blocco intatto."""
+    righe = testo.splitlines(keepends=True)
+    dentro = False
+    for numero, riga in enumerate(righe):
+        nuda = riga.strip()
+        if nuda.startswith("- symbol:"):
+            dentro = nuda.split(":", 1)[1].strip().upper() == simbolo.upper()
+            continue
+        if dentro and nuda.startswith("enabled:"):
+            indentazione = " " * (len(riga.rstrip("\n")) - len(riga.rstrip("\n").lstrip(" ")))
+            fine = "\n" if riga.endswith("\n") else ""
+            righe[numero] = f"{indentazione}enabled: {'true' if acceso else 'false'}{fine}"
+            return "".join(righe)
+    return testo
+
+
+def patch_yaml_value(testo: str, percorso: tuple[str, ...], valore: Any) -> str:
+    """Cambia un valore nel file lasciando tutto il resto com'e'.
+
+    ``yaml.safe_dump`` riscriverebbe il file da capo e butterebbe via i
+    commenti. Quel file e' pieno di spiegazioni scritte per chi lo apre:
+    perderle a ogni salvataggio significa svuotare la documentazione
+    proprio di chi ne ha piu' bisogno.
+
+    Si cerca la riga seguendo l'indentazione, cosi' due chiavi con lo
+    stesso nome in sezioni diverse non si confondono.
+    """
+    righe = testo.splitlines(keepends=True)
+    livello = 0
+    inizio = 0
+    for profondita, chiave in enumerate(percorso):
+        atteso = "  " * profondita
+        trovata = -1
+        for numero in range(inizio, len(righe)):
+            riga = righe[numero]
+            nuda = riga.rstrip("\n")
+            if not nuda.strip() or nuda.strip().startswith("#"):
+                continue
+            rientro = len(nuda) - len(nuda.lstrip(" "))
+            if rientro < len(atteso) and numero > inizio:
+                break  # siamo usciti dalla sezione
+            if rientro != len(atteso):
+                continue
+            if nuda.strip().split(":")[0].strip() == chiave:
+                trovata = numero
+                break
+        if trovata < 0:
+            raise UiError(
+                f"chiave {'.'.join(percorso)} non trovata nel file di "
+                "configurazione: non la riscrivo alla cieca"
+            )
+        inizio = trovata + 1
+        livello = profondita
+
+    riga = righe[trovata].rstrip("\n")
+    indentazione = " " * (len(riga) - len(riga.lstrip(" ")))
+    commento = ""
+    corpo = riga.split(":", 1)[1] if ":" in riga else ""
+    if "#" in corpo:
+        commento = "  #" + corpo.split("#", 1)[1]
+    fine = "\n" if righe[trovata].endswith("\n") else ""
+    righe[trovata] = f"{indentazione}{percorso[-1]}: {valore}{commento}{fine}"
+    del livello
+    return "".join(righe)
 
 
 def apply_config_changes(raw: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
@@ -877,13 +1021,33 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
         except Exception as exc:  # va mostrato nel pannello, non propagato
             return _error(friendly_validation_message(exc))
 
-        await asyncio.to_thread(
-            config_path.write_text,
-            yaml.safe_dump(updated, sort_keys=False, allow_unicode=True),
-            encoding="utf-8",
-        )
+        # Si riscrivono le sole righe cambiate: il file e' pieno di
+        # commenti, e riscriverlo da capo li cancellerebbe tutti.
+        try:
+            testo = await asyncio.to_thread(config_path.read_text, encoding="utf-8")
+            for chiave, valore in changes.items():
+                if chiave == "simboli_abilitati":
+                    continue
+                percorso = EDITABLE_FIELDS[chiave]
+                testo = patch_yaml_value(testo, percorso, valore)
+            if "simboli_abilitati" in changes:
+                voluti = {str(x).upper() for x in changes["simboli_abilitati"]}
+                for simbolo in raw["symbols"]:
+                    testo = _patch_simbolo(
+                        testo, str(simbolo["symbol"]), simbolo["symbol"].upper() in voluti
+                    )
+        except UiError as exc:
+            return _error(str(exc))
+        await asyncio.to_thread(config_path.write_text, testo, encoding="utf-8")
         supervisor.reload_config()
-        return _json({"ok": True, "stato": supervisor.status()})
+        # Il capitale vive nel registro: senza questo allineamento la
+        # casella sembrerebbe salvata e all'avvio tornerebbe il valore
+        # di prima.
+        avviso = supervisor.allinea_capitale(supervisor.config.capital_quote)
+        risposta: dict[str, Any] = {"ok": True, "stato": supervisor.status()}
+        if avviso:
+            risposta["avviso"] = avviso
+        return _json(risposta)
 
     async def set_credentials(request: web.Request) -> web.Response:
         try:
@@ -993,6 +1157,9 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
         except UiError as exc:
             return _error(str(exc))
         return _json({"ok": True, "posizioni": closed})
+
+    async def prices(request: web.Request) -> web.Response:
+        return _json(supervisor.prezzi())
 
     async def capital(request: web.Request) -> web.Response:
         return _json(supervisor.capitale())
@@ -1386,6 +1553,7 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
     app.router.add_post("/api/chiudi-tutto", flatten)
     app.router.add_post("/api/killswitch-reset", reset_killswitch)
     app.router.add_get("/api/capitale", capital)
+    app.router.add_get("/api/prezzi", prices)
     app.router.add_post("/api/capitale/movimento", capital_movement)
     app.router.add_post("/api/scarica-dati", fetch_data)
     app.router.add_post("/api/backtest", run_backtest)
