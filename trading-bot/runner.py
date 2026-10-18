@@ -17,6 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from ai.ponte import ModalitaPonte, PonteAI
 from backtest.costs import CostModel
 from config.credentials import Credentials, load_credentials
 from config.schema import INTERVAL_MS, AppConfig, CostsConfig, Mode
@@ -133,6 +134,9 @@ class TradingBot:
     #: dal denaro guadagnato, e tiene la base del dimensionamento al
     #: valore corrente invece che al deposito iniziale.
     ledger: EventLedger | None = None
+    #: Ponte verso l'assistente. Spento di default: un consiglio
+    #: non apre posizioni, e quando e' acceso puo' solo fermarle.
+    ponte_ai: PonteAI | None = None
     #: Guida del conto: un solo processo alla volta puo' inviare ordini.
     #: ``None`` solo dove non si invia nulla (backtest, misure).
     lease: FileLease | None = None
@@ -168,6 +172,13 @@ class TradingBot:
     _day_key: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
+        if self.ponte_ai is None:
+            self.ponte_ai = PonteAI(
+                cartella=self.config.ai.cartella,
+                abilitato=self.config.ai.abilitato,
+                modalita=ModalitaPonte(self.config.ai.modalita),
+                scadenza_s=self.config.ai.scadenza_s,
+            )
         self.features = FeatureEngine(
             self.config.features, trade_capacity=self.config.data.buffer_capacity
         )
@@ -579,6 +590,33 @@ class TradingBot:
 
         if not decision.approved or decision.order is None:
             return None
+
+        # L'assistente vede la decisione gia' presa e puo' solo toglierla.
+        # In ombra non cambia niente: resta scritta, e basta.
+        if self.ponte_ai is not None and self.ponte_ai.abilitato:
+            identificativo = self.ponte_ai.chiedi(
+                "questa apertura ha senso, viste le condizioni?",
+                {
+                    "simbolo": symbol,
+                    "direzione": proposal.signal.direction.value,
+                    "probabilita": proposal.signal.probability,
+                    "prezzo": str(price),
+                    "quantita": str(decision.order.quantity),
+                    "feature": dict(proposal.signal.features),
+                    "rischio": dict(decision.risk_snapshot),
+                },
+                ts_ms=now_ms,
+            )
+            if identificativo is not None:
+                consiglio = self.ponte_ai.leggi_risposta(identificativo, now_ms=now_ms)
+                if self.ponte_ai.blocca(consiglio):
+                    logger.warning(
+                        "apertura su %s fermata dal consiglio: %s",
+                        symbol,
+                        consiglio.motivo if consiglio else "",
+                    )
+                    return None
+
         await self.submit(decision.order)
         self._aggiorna_piano(symbol, proposal.plan)
         return decision.order

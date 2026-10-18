@@ -491,6 +491,35 @@ class BacktestConfig(_Base):
         return self
 
 
+class AiConfig(_Base):
+    """Collegamento con l'assistente gia' autorizzato sul computer.
+
+    Spento di default, e non per prudenza formale: un consiglio che
+    diventa un ordine crea un sistema in cui nessuno sa piu' chi ha
+    deciso. Anche acceso, l'assistente non puo' aprire niente: al
+    massimo puo' fermare un'apertura, e solo in modalita' "veto".
+    """
+
+    abilitato: bool = False
+    #: "ombra" = solo registrato; "veto" = puo' impedire un'apertura.
+    #: Non esiste una modalita' che apra posizioni.
+    modalita: str = "ombra"
+    #: Cartella di scambio con l'assistente. Nessuna chiave ci entra.
+    cartella: Path = Path("state/ai")
+    #: Oltre questi secondi un consiglio riguarda un mercato che non c'e' piu'.
+    scadenza_s: int = Field(default=300, ge=10)
+
+    @field_validator("modalita")
+    @classmethod
+    def _modalita_nota(cls, value: str) -> str:
+        if value not in {"ombra", "veto"}:
+            raise ValueError(
+                f"modalita' {value!r} sconosciuta: ammesse 'ombra' e 'veto'. "
+                "Non esiste una modalita' in cui l'assistente apre posizioni."
+            )
+        return value
+
+
 class MonitoringConfig(_Base):
     log_level: str = "INFO"
     #: Log strutturato JSON, una riga per decisione.
@@ -537,6 +566,7 @@ class AppConfig(_Base):
     signals: SignalsConfig = SignalsConfig()
     backtest: BacktestConfig | None = None
     monitoring: MonitoringConfig = MonitoringConfig()
+    ai: AiConfig = AiConfig()
     exchange: ExchangeConfig = ExchangeConfig()
 
     @field_validator("quote_asset")

@@ -146,3 +146,13 @@ exchange:
   backoff_multiplier: 2.0
   max_retries: 5
   exchange_info_refresh_s: 3600
+
+# Collegamento con l'assistente gia' autorizzato sul computer (Claude Code).
+# Spento. Nel bot non c'e' nessuna chiave di nessun fornitore di modelli:
+# lo scambio avviene lasciando file in una cartella. Anche acceso,
+# l'assistente non puo' aprire posizioni: al massimo puo' fermarne una.
+ai:
+  abilitato: false
+  modalita: ombra      # ombra = solo registrato; veto = puo' fermare un'apertura
+  cartella: state/ai
+  scadenza_s: 300
