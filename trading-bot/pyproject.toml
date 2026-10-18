@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading-bot"
+version = "0.1.0"
+description = "Bot di trading algoritmico modulare, testnet-first"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "websockets>=12.0",
+    "aiohttp>=3.9",
+    "polars>=0.20",
+    "duckdb>=0.10",
+    "pyarrow>=15.0",
+    "structlog>=24.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.9",
+    "ruff>=0.3",
+]
+
+# I pacchetti sono elencati a mano: con una decina di cartelle al primo
+# livello setuptools si rifiuta di indovinare quali siano, e l'installazione
+# fallisce. Senza questo elenco l'avviatore si romperebbe al primo lancio.
+[tool.setuptools]
+packages = [
+    "backtest",
+    "config",
+    "core",
+    "data",
+    "execution",
+    "features",
+    "monitoring",
+    "risk",
+    "scripts",
+    "signals",
+    "webui",
+]
+py-modules = ["main", "runner"]
+
+[tool.setuptools.package-data]
+webui = ["static/*.html"]
+config = ["*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q --strict-markers"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+disallow_any_explicit = false
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["yaml", "polars", "duckdb"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "ASYNC", "S", "DTZ", "RUF"]
+# S101: assert ammesso nei test e come invariante interna.
+# ASYNC109: il timeout e' un parametro del protocollo HTTP, non un'attesa nostra.
+ignore = ["S101", "ASYNC109"]
+
+[tool.ruff.lint.per-file-ignores]
+# S105/S106: stringhe fittizie nei test delle credenziali.
+# S311: random serve a generare serie sintetiche, non chiavi.
+# B008: Decimal come default negli helper dei test e' voluto e immutabile.
+"tests/*" = ["S105", "S106", "S311", "B008"]
