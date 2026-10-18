@@ -36,6 +36,12 @@ from urllib.parse import urlparse
 import yaml
 from aiohttp import web
 
+from apprendimento.esperimenti import (
+    CANDIDATI_STANDARD,
+    RegistroEsperimenti,
+    impronta_dei_dati,
+    valuta_candidati,
+)
 from backtest.engine import BacktestEngine
 from backtest.frequenza import esplora, esplora_orizzonti
 from backtest.metrics import assess
@@ -1104,6 +1110,78 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
         supervisor.job_task = asyncio.create_task(worker())
         return _json({"ok": True, "lavoro": job.to_dict()})
 
+    async def run_experiments(request: web.Request) -> web.Response:
+        """Prova alcune varianti dei parametri e dice quali reggono.
+
+        Non applica niente: propone, con i numeri accanto. Un bot che si
+        riscrive i parametri da solo mentre opera e' un bot di cui
+        nessuno sa piu' cosa stia facendo.
+        """
+        if supervisor.job is not None and supervisor.job.is_running:
+            return _error(f"c'e' gia' un'operazione in corso: {supervisor.job.name}")
+
+        store = ParquetStore(supervisor.config.data.parquet_root)
+        simboli = [s.symbol for s in supervisor.config.enabled_symbols]
+        if not store.read_candles(symbols=simboli):
+            return _error(
+                "nessuna candela salvata: esegui prima il passo 2 e scarica lo storico"
+            )
+
+        job = Job(name="esperimenti sui parametri")
+
+        def work() -> dict[str, Any]:
+            config = supervisor.config
+            candles = store.read_candles(symbols=simboli)
+            impronta = impronta_dei_dati(candles)
+            registro = RegistroEsperimenti(
+                percorso_registro(config).with_name("esperimenti.jsonl")
+            )
+            esiti = valuta_candidati(config, candles, CANDIDATI_STANDARD)
+            righe: list[dict[str, Any]] = []
+            for esito in esiti:
+                gia_visto = registro.gia_provato(esito.candidato, impronta)
+                decisione = registro.annota(
+                    esito, impronta_dati=impronta, ts_ms=int(time.time() * 1000)
+                )
+                righe.append(
+                    {
+                        **esito.to_dict(),
+                        "promosso": decisione.promosso,
+                        "motivo_decisione": decisione.motivo,
+                        "gia_provato_su_questi_dati": gia_visto,
+                    }
+                )
+            return {
+                "esperimenti": righe,
+                "impronta_dati": impronta,
+                "prove_registrate": len(registro.storia()),
+                "nota": (
+                    "Una variante viene proposta solo se regge su piu' finestre "
+                    "temporali separate, non se vince in media. Niente viene "
+                    "applicato da solo: le modifiche le fai tu nelle impostazioni."
+                ),
+            }
+
+        supervisor.job = job
+
+        async def worker() -> None:
+            try:
+                job.result = await asyncio.to_thread(work)
+                job.state = "completato"
+                promossi = sum(
+                    1 for r in job.result["esperimenti"] if r["promosso"]
+                )
+                job.message = (
+                    f"{len(job.result['esperimenti'])} varianti provate, "
+                    f"{promossi} reggono"
+                )
+            except Exception as exc:
+                job.state = "fallito"
+                job.message = f"{type(exc).__name__}: {exc}"
+
+        supervisor.job_task = asyncio.create_task(worker())
+        return _json({"ok": True, "lavoro": job.to_dict()})
+
     async def run_backtest(request: web.Request) -> web.Response:
         if supervisor.job is not None and supervisor.job.is_running:
             return _error(f"c'e' gia' un'operazione in corso: {supervisor.job.name}")
@@ -1262,6 +1340,7 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
     app.router.add_post("/api/scarica-dati", fetch_data)
     app.router.add_post("/api/backtest", run_backtest)
     app.router.add_post("/api/frequenza", explore_frequency)
+    app.router.add_post("/api/esperimenti", run_experiments)
     app.router.add_get("/api/lavoro", job_status)
     app.router.add_static("/static/", STATIC_DIR)
     app.on_cleanup.append(on_cleanup)

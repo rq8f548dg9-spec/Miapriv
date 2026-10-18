@@ -301,6 +301,18 @@
       <div id="frequenza-result" class="hidden" style="margin-top:12px"></div>
     </div>
 
+    <div class="step" id="step-esperimenti">
+      <div class="step-head"><span class="step-num">5</span>
+        <span class="step-title">Prova varianti dei parametri</span><button type="button" class="info" data-info="esperimenti" aria-expanded="false" aria-label="Che cos'è: gli esperimenti sui parametri">i</button></div>
+      <p class="small muted">
+        Misura alcune varianti su finestre temporali separate e dice quali reggono.
+        Non cambia niente da solo: propone, e decidi tu.
+      </p>
+      <button id="btn-esperimenti">Prova le varianti</button>
+      <div class="msg" id="msg-esperimenti"></div>
+      <div id="esperimenti-result" class="hidden" style="margin-top:12px"></div>
+    </div>
+
   </div>
 </section>
 
@@ -507,6 +519,19 @@ const INFO = {
       da solo. I <strong>limiti di rischio non si alzano mai da soli</strong>: restano
       quelli che hai messo nelle impostazioni.`,
     esempio: 'Registrare un movimento è contabilità: il bonifico lo fai tu sull\'exchange, il bot non ha il permesso di prelievo.',
+  },
+  esperimenti: {
+    titolo: 'Prova varianti dei parametri',
+    testo: `Il modo facile di "migliorare" un bot è provare cento varianti sugli stessi
+      dati e tenere la migliore. È anche il modo facile di ottenere un bot che ha
+      imparato a memoria il passato: con cento tentativi la migliore sembra brava
+      anche se sono tutte inutili.<br><br>
+      Qui le varianti sono poche e scelte prima, e vengono misurate su
+      <strong>finestre temporali separate</strong>: una variante è proposta solo se
+      regge in più finestre, non se vince in media. Gli esperimenti restano scritti
+      con l'impronta dei dati, così rifare la stessa prova finché "viene bene" si
+      vede. I parametri di rischio sono esclusi per costruzione.`,
+    esempio: 'Nessuna variante viene applicata da sola: le modifiche le fai tu nelle impostazioni.',
   },
   frequenza: {
     titolo: 'Quanto spesso vuoi che operi',
@@ -1099,6 +1124,36 @@ $('btn-fetch').onclick = async () => {
     pollJob('msg-data');
   } catch (error) { note('msg-data', error.message, 'err'); }
 };
+
+$('btn-esperimenti').onclick = async () => {
+  try {
+    await post('/api/esperimenti');
+    note('msg-esperimenti', 'Misura in corso: richiede qualche minuto…');
+    pollJob('msg-esperimenti', renderEsperimenti);
+  } catch (error) { note('msg-esperimenti', error.message, 'err'); }
+};
+
+function renderEsperimenti(risultato) {
+  const box = $('esperimenti-result');
+  box.classList.remove('hidden');
+  if (!risultato || !risultato.esperimenti) { box.innerHTML = ''; return; }
+  const righe = risultato.esperimenti.map(function (e) {
+    const classe = e.promosso ? 'pos' : '';
+    return '<tr><td><strong>' + esc(e.candidato) + '</strong><br>'
+      + '<span class="small muted">' + esc(e.motivo) + '</span></td>'
+      + '<td>' + e.finestre_in_profitto + ' / ' + e.finestre_valutate + '</td>'
+      + '<td>' + e.operazioni + '</td>'
+      + '<td>' + (e.rendimento_medio === null ? '—'
+          : ((e.rendimento_medio >= 0 ? '+' : '') + (100 * e.rendimento_medio).toFixed(2) + '%')) + '</td>'
+      + '<td class="' + classe + '">' + (e.promosso ? 'regge' : 'scartata') + '</td></tr>'
+      + '<tr><td colspan="5" class="small muted">' + esc(e.motivo_decisione || '') + '</td></tr>';
+  }).join('');
+  box.innerHTML = '<div class="scroll"><table><thead><tr>'
+    + '<th>Variante</th><th>Finestre in profitto</th><th>Operazioni</th>'
+    + '<th>Rendimento medio</th><th>Esito</th></tr></thead><tbody>'
+    + righe + '</tbody></table></div>'
+    + '<p class="small muted">' + esc(risultato.nota || '') + '</p>';
+}
 
 $('btn-frequenza').onclick = async () => {
   try {

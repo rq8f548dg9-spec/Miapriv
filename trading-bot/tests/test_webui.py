@@ -886,3 +886,19 @@ class TestScenariNelPannello:
         risultato = simula_scenari(operazioni, capitale=D("200"), percorsi=200, seed=1)
         assert risultato.affidabile
         assert "percentili" in risultato.to_dict()
+
+
+class TestEsperimentiDalPannello:
+    async def test_senza_dati_lo_dice(self, client: TestClient[Any, Any]) -> None:
+        risposta = await client.post("/api/esperimenti", json={})
+        assert risposta.status == 400
+        assert "storico" in (await risposta.json())["errore"]
+
+    def test_i_candidati_standard_non_toccano_le_protezioni(self) -> None:
+        """Se un giorno qualcuno ne aggiungesse uno sul kill switch, il
+        costruttore lo rifiuterebbe: questo test lo rende visibile."""
+        from apprendimento.esperimenti import CANDIDATI_STANDARD
+
+        for candidato in CANDIDATI_STANDARD:
+            for percorso in candidato.modifiche:
+                assert not percorso.startswith(("risk.", "mode", "exchange."))
