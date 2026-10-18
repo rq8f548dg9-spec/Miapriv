@@ -172,9 +172,10 @@ class TestRuleBaseline:
 
 
 class TestMLPlaceholder:
-    def test_rifiuta_di_generare(self) -> None:
-        """Il modello si scrive solo dopo che la baseline ha retto i costi."""
-        with pytest.raises(ModelNotImplementedError, match="segnaposto"):
+    def test_senza_modello_non_genera_niente(self) -> None:
+        """Il generatore esiste, il modello no finche' non lo si addestra:
+        meglio un errore esplicito che un segnale inventato."""
+        with pytest.raises(ModelNotImplementedError, match="nessun modello"):
             MLSignalGenerator().generate(vector(), has_position=False, now_ms=NOW)
 
     def test_validate_senza_modello(self) -> None:

@@ -62,12 +62,25 @@ _UN_GIORNO_MS = 86_400_000
 
 
 def build_generator(config: AppConfig) -> SignalGenerator:
-    """Sceglie il generatore. Il modello ML resta un segnaposto che rifiuta."""
+    """Sceglie il generatore e, se e' il modello, lo carica davvero.
+
+    Un percorso sbagliato solleva invece di passare in silenzio: un bot
+    che crede di avere un modello e non ce l'ha decide lo stesso, e
+    nessuno se ne accorge finche' non si guardano i conti.
+    """
     if config.signals.generator == "ml":
+        from signals.logistic import ModelloLogistico
         from signals.ml import MLSignalGenerator
 
+        percorso = config.signals.ml_model_path
+        modello = ModelloLogistico.carica(percorso) if percorso else None
         return MLSignalGenerator(
-            model_path=config.signals.ml_model_path, horizon_ms=config.signals.signal_horizon_ms
+            model=modello,
+            model_path=percorso,
+            horizon_ms=config.signals.signal_horizon_ms,
+            measured_calibration_error=(
+                modello.errore_calibrazione if modello else None
+            ),
         )
     return RuleBasedSignalGenerator(horizon_ms=config.signals.signal_horizon_ms)
 

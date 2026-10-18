@@ -22,9 +22,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from core.types import TimestampMs
+from core.types import SignalDirection, TimestampMs
 from features.engine import FeatureVector
-from signals.base import GeneratedSignal, SignalGenerator
+from signals.base import GeneratedSignal, SignalGenerator, TradePlan
 
 __all__ = [
     "CalibratedModel",
@@ -42,9 +42,15 @@ class ModelNotImplementedError(NotImplementedError):
 class CalibratedModel(Protocol):
     """Contratto minimo di un modello collegabile al bot."""
 
-    #: Nomi delle feature attese, nell'ordine. Serve a bloccare un vettore
-    #: incompleto o riordinato invece di predire su dati sbagliati.
-    feature_names: Sequence[str]
+    @property
+    def feature_names(self) -> Sequence[str]:
+        """Nomi delle feature attese, nell'ordine.
+
+        Serve a bloccare un vettore incompleto o riordinato invece di
+        predire su dati sbagliati. E' di sola lettura nel contratto: chi
+        implementa puo' tenerli in una lista.
+        """
+        ...
 
     def predict_proba(self, features: Sequence[float]) -> float:
         """Probabilita' calibrata in [0, 1] che la direzione long sia corretta."""
@@ -113,15 +119,67 @@ class MLSignalGenerator(SignalGenerator):
     #: modello non va collegato: Kelly si fida della probabilita'.
     measured_calibration_error: float | None = None
     max_calibration_error: float = 0.05
+    #: Stop e target come multipli dell'ATR, gli stessi della baseline:
+    #: il modello stima la probabilita', non la volatilita'.
+    stop_atr_multiple: float = 1.0
+    target_atr_multiple: float = 2.0
     name: str = "ml"
 
     def generate(
         self, vector: FeatureVector, *, has_position: bool, now_ms: TimestampMs
     ) -> GeneratedSignal | None:
-        raise ModelNotImplementedError(
-            "signals/ml.py e' un segnaposto. Il modello si implementa solo dopo che "
-            "la baseline a regole ha retto i costi di transazione nel backtest "
-            "(fase 6). Fino ad allora usare generator='rules'."
+        """Probabilita' dal modello, piano dallo stesso ATR della baseline.
+
+        Il modello dice quanto e' probabile che andare long adesso paghi i
+        costi. Non dice dove mettere lo stop: quello resta ancorato alla
+        volatilita' misurata, come per le regole. Senza ATR non c'e' stop,
+        e senza stop non si apre niente.
+        """
+        if self.model is None:
+            raise ModelNotImplementedError(
+                "nessun modello caricato: addestralo con scripts/addestra.py, "
+                "oppure usa generator='rules'."
+            )
+        if not self.warmup_satisfied(vector):
+            return None
+
+        atr_bps = vector.values.get("atr_bps")
+        if atr_bps is None or atr_bps <= 0:
+            return None
+
+        mancanti = [n for n in self.model.feature_names if n not in vector.values]
+        if mancanti:
+            # Una feature assente non vale zero: predire su un vettore
+            # incompleto produce una probabilita' sbagliata che sembra
+            # valida, ed e' peggio di non predire.
+            return None
+
+        probabilita = self.model.predict_proba(self.extract(vector))
+        direzione = SignalDirection.LONG if probabilita > 0.5 else SignalDirection.FLAT
+        if direzione is SignalDirection.FLAT and not has_position:
+            return None
+
+        plan = TradePlan(
+            stop_bps=float(atr_bps) * self.stop_atr_multiple,
+            take_profit_bps=float(atr_bps) * self.target_atr_multiple,
+        )
+        return GeneratedSignal(
+            signal=self._build_signal(
+                symbol=vector.symbol,
+                now_ms=now_ms,
+                direction=direzione,
+                probability=probabilita,
+                features=vector.values,
+                generator=self.name,
+                horizon_ms=self.horizon_ms,
+                metadata={
+                    "errore_calibrazione": self.measured_calibration_error,
+                    "campioni_addestramento": getattr(
+                        self.model, "campioni_addestramento", None
+                    ),
+                },
+            ),
+            plan=plan,
         )
 
     def validate_model(self) -> None:
