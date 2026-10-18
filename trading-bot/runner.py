@@ -45,6 +45,7 @@ from execution.idempotency import DuplicateOrderError, OrderRegistry
 from execution.leadership import FileLease, LeaseLostError
 from execution.paper_live import PaperLiveBroker
 from execution.reconcile import Reconciler
+from execution.user_stream import FlussoAccount
 from features.engine import FeatureEngine
 from monitoring.alerts import AlertManager, LogChannel, Severity
 from monitoring.logger import DecisionLogger
@@ -137,6 +138,9 @@ class TradingBot:
     #: Ponte verso l'assistente. Spento di default: un consiglio
     #: non apre posizioni, e quando e' acceso puo' solo fermarle.
     ponte_ai: PonteAI | None = None
+    #: Ascolto del flusso dell'account. Esiste solo dove c'e' un
+    #: account: in paper e nel backtest resta None.
+    flusso_account: FlussoAccount | None = None
     #: Guida del conto: un solo processo alla volta puo' inviare ordini.
     #: ``None`` solo dove non si invia nulla (backtest, misure).
     lease: FileLease | None = None
