@@ -34,6 +34,30 @@ symbols:
     quote_asset: USDT
     enabled: false
     max_position_quote: 30
+  # Coppie piu' mosse, spente. Non sono "migliori": si muovono di piu' in
+  # percentuale, e il costo di un giro e' lo stesso su tutte, quindi
+  # superano la riga dei costi piu' spesso. Il passo 4 del pannello le
+  # misura sui tuoi dati; accendine una solo dopo aver visto quei numeri.
+  - symbol: SOLUSDT
+    base_asset: SOL
+    quote_asset: USDT
+    enabled: false
+    max_position_quote: 30
+  - symbol: DOGEUSDT
+    base_asset: DOGE
+    quote_asset: USDT
+    enabled: false
+    max_position_quote: 30
+  - symbol: XRPUSDT
+    base_asset: XRP
+    quote_asset: USDT
+    enabled: false
+    max_position_quote: 30
+  - symbol: AVAXUSDT
+    base_asset: AVAX
+    quote_asset: USDT
+    enabled: false
+    max_position_quote: 30
 
 risk:
   sizing:

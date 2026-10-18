@@ -43,7 +43,7 @@ from apprendimento.esperimenti import (
     valuta_candidati,
 )
 from backtest.engine import BacktestEngine
-from backtest.frequenza import esplora, esplora_orizzonti
+from backtest.frequenza import esplora, esplora_coppie, esplora_orizzonti
 from backtest.metrics import assess
 from backtest.scenari import simula_scenari
 from config.credentials import (
@@ -1013,6 +1013,7 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
         # ha una finestra corta e separata. Senza, la prova della strategia
         # resta cieca su meta' di cio' che il bot guarda dal vivo.
         trade_days = max(0, min(int(payload.get("giorni_flusso", 2)), 7))
+        includi_spente = bool(payload.get("includi_coppie_da_provare", True))
 
         job = Job(name=f"scarico dati ({days} giorni)")
         supervisor.job = job
@@ -1021,12 +1022,14 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
             from scripts.fetch_history import fetch
 
             try:
-                total = await fetch(
-                    [s.symbol for s in supervisor.config.enabled_symbols],
-                    days,
-                    config_path,
-                    trade_days=trade_days,
-                )
+                # Anche le coppie spente: servono al passo 4 per
+                # confrontarle. Scaricarne i dati non le fa operare.
+                simboli = [
+                    s.symbol
+                    for s in supervisor.config.symbols
+                    if s.enabled or includi_spente
+                ]
+                total = await fetch(simboli, days, config_path, trade_days=trade_days)
                 job.state = "completato"
                 job.message = f"scaricate {total} candele"
                 job.result = {"candele": total}
@@ -1067,6 +1070,19 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
             # atteso cresce mentre il costo di un giro resta lo stesso, ed
             # e' spesso li' che si decide se la strategia possa operare.
             orizzonti = esplora_orizzonti(config, candles, flusso)
+
+            # La leva piu' grossa, e la meno ovvia: il costo di un giro e'
+            # lo stesso su ogni coppia, il movimento atteso no.
+            tutte = [s.symbol for s in config.symbols]
+            per_simbolo = {
+                simbolo: store.read_candles(symbols=[simbolo]) for simbolo in tutte
+            }
+            flussi = {
+                simbolo: store.read_trades(symbols=[simbolo])
+                for simbolo in tutte
+                if per_simbolo.get(simbolo)
+            }
+            coppie = esplora_coppie(config, per_simbolo, flussi)
             minime = config.features.warmup_bars + 50
             saltati = [
                 f"{f} barre" for f in (1, 5, 15, 60) if len(candles) // f < minime
@@ -1074,6 +1090,10 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
             return {
                 "profili": [riga.to_dict() for riga in righe],
                 "orizzonti": [riga.to_dict() for riga in orizzonti],
+                "coppie": [riga.to_dict() for riga in coppie],
+                "coppie_senza_dati": sorted(
+                    s.symbol for s in config.symbols if not per_simbolo.get(s.symbol)
+                ),
                 "orizzonti_saltati": saltati,
                 "con_flusso_ordini": bool(flusso),
                 "nota": (

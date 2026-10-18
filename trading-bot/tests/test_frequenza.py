@@ -233,3 +233,60 @@ class TestOrizzonti:
             generatore=lambda _cfg: AlwaysTradingGenerator(),
         )
         assert [r.etichetta for r in righe] == ["1 barra"]
+
+
+class TestCoppie:
+    """La leva piu' grossa non e' la soglia ne' la durata della barra: e'
+    la coppia. BTC e ETH sono fra le meno volatili, e su barre da un
+    minuto il loro movimento tipico sta sotto il costo di un giro. Una
+    coppia che si muove il triplo cambia l'aritmetica senza toccare una
+    sola protezione."""
+
+    def test_misura_ogni_coppia_separatamente(self, config: AppConfig) -> None:
+        from backtest.frequenza import esplora_coppie
+
+        serie = {
+            "BTCUSDT": synthetic_candles(900, symbol="BTCUSDT"),
+            "ETHUSDT": synthetic_candles(900, symbol="ETHUSDT", start_price=D("3000")),
+        }
+        righe = esplora_coppie(
+            config,
+            serie,
+            fattori=(1,),
+            generatore=lambda _cfg: AlwaysTradingGenerator(),
+        )
+        assert {r.simbolo for r in righe} == {"BTCUSDT", "ETHUSDT"}
+
+    def test_una_coppia_piu_mossa_supera_il_costo_piu_spesso(
+        self, config: AppConfig
+    ) -> None:
+        """E' il punto: a parita' di tutto il resto, il movimento atteso
+        cresce con la volatilita' mentre il costo resta lo stesso."""
+        from backtest.frequenza import esplora_coppie
+
+        calma = synthetic_candles(900, symbol="CALMAUSDT", seed=4)
+        mossa = synthetic_candles(900, symbol="MOSSAUSDT", seed=4, volatilita=0.006)
+        righe = esplora_coppie(
+            config,
+            {"CALMAUSDT": calma, "MOSSAUSDT": mossa},
+            fattori=(1,),
+            generatore=lambda _cfg: AlwaysTradingGenerator(),
+        )
+        per_simbolo = {r.simbolo: r for r in righe}
+        assert (
+            per_simbolo["MOSSAUSDT"].esito.operazioni
+            >= per_simbolo["CALMAUSDT"].esito.operazioni
+        )
+
+    def test_una_coppia_senza_dati_viene_saltata_non_inventata(
+        self, config: AppConfig
+    ) -> None:
+        from backtest.frequenza import esplora_coppie
+
+        righe = esplora_coppie(
+            config,
+            {"BTCUSDT": synthetic_candles(900), "VUOTAUSDT": []},
+            fattori=(1,),
+            generatore=lambda _cfg: AlwaysTradingGenerator(),
+        )
+        assert {r.simbolo for r in righe} == {"BTCUSDT"}

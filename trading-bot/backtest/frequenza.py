@@ -14,7 +14,7 @@ sotto quella riga il bot paga per operare, e piu' opera piu' paga.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -27,11 +27,13 @@ from signals.base import SignalGenerator
 
 __all__ = [
     "PROFILI",
+    "EsitoCoppia",
     "EsitoFrequenza",
     "EsitoOrizzonte",
     "ProfiloFrequenza",
     "aggrega",
     "esplora",
+    "esplora_coppie",
     "esplora_orizzonti",
 ]
 
@@ -259,6 +261,103 @@ def esplora_orizzonti(
             generatore=generatore,
         )[0]
         righe.append(EsitoOrizzonte(etichetta=etichetta, fattore=fattore, esito=esito))
+    return righe
+
+
+@dataclass(frozen=True, slots=True)
+class EsitoCoppia:
+    """La stessa impostazione su una coppia diversa."""
+
+    simbolo: str
+    etichetta_orizzonte: str
+    fattore: int
+    esito: EsitoFrequenza
+
+    def to_dict(self) -> dict[str, object]:
+        riga = dict(self.esito.to_dict())
+        riga["simbolo"] = self.simbolo
+        riga["orizzonte"] = self.etichetta_orizzonte
+        riga["fattore"] = self.fattore
+        return riga
+
+
+def _solo(config: AppConfig, simbolo: str) -> AppConfig:
+    """Configurazione con una sola coppia attiva.
+
+    Serve a misurare una coppia per volta: con due coppie attive e un
+    limite di posizioni aperte, la seconda a volte non entra per colpa
+    della prima, e il confronto non direbbe piu' niente sulla coppia.
+    """
+    raw = config.model_dump()
+    raw["symbols"] = [dict(riga) for riga in raw["symbols"]]
+    raw["risk"] = dict(raw["risk"])
+    raw["risk"]["limits"] = dict(raw["risk"]["limits"])
+    trovato = False
+    for riga in raw["symbols"]:
+        attiva = riga["symbol"] == simbolo
+        riga["enabled"] = attiva
+        trovato = trovato or attiva
+    if not trovato:
+        # Coppia non dichiarata in configurazione: si aggiunge solo per
+        # la misura, con gli stessi limiti delle altre.
+        modello = dict(raw["symbols"][0])
+        modello.update(
+            {
+                "symbol": simbolo,
+                "base_asset": simbolo.removesuffix(config.quote_asset) or "XXX",
+                "quote_asset": config.quote_asset,
+                "enabled": True,
+            }
+        )
+        raw["symbols"].append(modello)
+    # Con una coppia sola, un limite di due posizioni aperte e'
+    # inefficace e la configurazione lo rifiuta, giustamente. Qui si
+    # misura una coppia per volta, quindi il limite scende a una: e' la
+    # stessa cosa che il limite vero farebbe in quello scenario.
+    raw["risk"]["limits"]["max_open_positions"] = 1
+    return AppConfig.model_validate(raw)
+
+
+def esplora_coppie(
+    config: AppConfig,
+    candele_per_simbolo: Mapping[str, Sequence[Candle]],
+    trades_per_simbolo: Mapping[str, Sequence[Trade]] | None = None,
+    *,
+    fattori: Sequence[int] = (1, 5, 15),
+    profilo: ProfiloFrequenza | None = None,
+    generatore: Callable[[AppConfig], SignalGenerator] | None = None,
+) -> list[EsitoCoppia]:
+    """Misura la stessa impostazione su coppie e durate di barra diverse.
+
+    E' la leva piu' grossa delle tre, e la meno ovvia. Il costo di un
+    giro e' lo stesso su qualunque coppia; il movimento atteso no. Una
+    coppia che si muove il triplo supera la riga dei costi tre volte piu'
+    spesso, senza che nessuna protezione venga toccata.
+    """
+    scelto = profilo or PROFILI[1]
+    minime = config.features.warmup_bars + 50
+    righe: list[EsitoCoppia] = []
+
+    for simbolo, candele in sorted(candele_per_simbolo.items()):
+        if not candele:
+            continue
+        cfg = _solo(config, simbolo)
+        flusso = (trades_per_simbolo or {}).get(simbolo, ())
+        for fattore in fattori:
+            barre = aggrega(candele, fattore)
+            if len(barre) < minime:
+                continue
+            esiti = esplora(
+                cfg, barre, flusso, profili=[scelto], generatore=generatore
+            )
+            righe.append(
+                EsitoCoppia(
+                    simbolo=simbolo,
+                    etichetta_orizzonte="1 barra" if fattore == 1 else f"{fattore} barre",
+                    fattore=fattore,
+                    esito=esiti[0],
+                )
+            )
     return righe
 
 

@@ -37,13 +37,19 @@ def synthetic_candles(
     symbol: str = "BTCUSDT",
     start_price: Decimal = D("60000"),
     start_ms: int = START,
+    volatilita: float = 0.0012,
 ) -> list[Candle]:
-    """Serie sintetica deterministica: random walk con volatilita' realistica."""
+    """Serie sintetica deterministica: random walk con volatilita' realistica.
+
+    ``volatilita`` e' lo scarto per barra: alzarla serve a rappresentare
+    una coppia piu' mossa, dove il movimento atteso cresce mentre il
+    costo di un giro resta lo stesso.
+    """
     rng = random.Random(seed)
     price = start_price
     candles: list[Candle] = []
     for i in range(count):
-        move = D(str(round(rng.gauss(0, 0.0012), 6)))
+        move = D(str(round(rng.gauss(0, volatilita), 6)))
         open_price = price
         close_price = (price * (D(1) + move)).quantize(D("0.01"))
         high = max(open_price, close_price) * D("1.0008")

@@ -1163,6 +1163,31 @@ $('btn-frequenza').onclick = async () => {
   } catch (error) { note('msg-frequenza', error.message, 'err'); }
 };
 
+function renderCoppie(risultato) {
+  const righe = (risultato.coppie || []).map(function (p) {
+    const classe = p.operazioni > 0 ? 'pos' : '';
+    return '<tr><td><strong>' + esc(p.simbolo) + '</strong></td>'
+      + '<td>' + esc(p.orizzonte) + '</td>'
+      + '<td class="' + classe + '">' + p.operazioni_al_giorno.toLocaleString('it-IT') + '</td>'
+      + '<td>' + p.operazioni + '</td>'
+      + '<td>' + (p.rendimento >= 0 ? '+' : '') + (100 * p.rendimento).toFixed(2) + '%</td>'
+      + '<td>' + esc(p.esito) + '</td></tr>';
+  }).join('');
+  if (!righe) return '';
+  const senzaDati = (risultato.coppie_senza_dati || []).length
+    ? '<p class="small muted">Senza dati, non misurate: '
+      + esc(risultato.coppie_senza_dati.join(', '))
+      + '. Scaricale al passo 2 (le coppie spente vengono scaricate comunque).</p>'
+    : '';
+  return '<p class="small muted" style="margin-top:14px"><strong>La stessa impostazione, '
+    + 'coppia per coppia.</strong> Il costo di un giro è identico su tutte; il movimento '
+    + 'atteso no. Una coppia che si muove di più supera la riga dei costi più spesso, '
+    + 'senza toccare nessuna protezione. Qui sono misurate una per volta.</p>'
+    + '<div class="scroll"><table><thead><tr><th>Coppia</th><th>Durata barra</th>'
+    + '<th>Operazioni al giorno</th><th>Operazioni</th><th>Risultato</th><th>Esito</th>'
+    + '</tr></thead><tbody>' + righe + '</tbody></table></div>' + senzaDati;
+}
+
 function renderFrequenza(risultato) {
   const box = $('frequenza-result');
   box.classList.remove('hidden');
@@ -1205,6 +1230,7 @@ function renderFrequenza(risultato) {
           + '<th>Operazioni al giorno</th><th>Operazioni totali</th><th>Risultato</th>'
           + '<th>Esito</th></tr></thead><tbody>' + orizzonti + '</tbody></table></div>'
         : '')
+    + renderCoppie(risultato)
     + ((risultato.orizzonti_saltati || []).length
         ? '<p class="small muted">Non misurati per dati insufficienti: '
           + esc(risultato.orizzonti_saltati.join(', ')) + '. Scarica più giorni al passo 2.</p>'
