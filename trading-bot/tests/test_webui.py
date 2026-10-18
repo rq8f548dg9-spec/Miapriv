@@ -902,3 +902,31 @@ class TestEsperimentiDalPannello:
         for candidato in CANDIDATI_STANDARD:
             for percorso in candidato.modifiche:
                 assert not percorso.startswith(("risk.", "mode", "exchange."))
+
+
+class TestChiaviInPaper:
+    """Salvare le chiavi in modalita' paper dava «la modalita' backtest
+    non usa chiavi API»: un messaggio che parla di una modalita' diversa
+    da quella attiva, su un'operazione che e' perfettamente sensata.
+    Le chiavi si preparano prima, si usano dopo."""
+
+    async def test_la_verifica_prova_la_testnet_anche_da_paper(
+        self, client: TestClient[Any, Any], tmp_path: Path
+    ) -> None:
+        risposta = await client.post(
+            "/api/test-connessione", json={}
+        )
+        messaggio = (await risposta.json()).get("errore", "")
+        assert "backtest" not in messaggio, (
+            "in paper il messaggio non deve parlare di backtest"
+        )
+
+    async def test_il_messaggio_dice_cosa_fare(
+        self, client: TestClient[Any, Any]
+    ) -> None:
+        risposta = await client.post("/api/test-connessione", json={})
+        if risposta.status == 400:
+            messaggio = (await risposta.json())["errore"]
+            # Senza chiavi salvate deve dire che mancano, non che la
+            # modalita' non le usa.
+            assert "chiav" in messaggio.lower()

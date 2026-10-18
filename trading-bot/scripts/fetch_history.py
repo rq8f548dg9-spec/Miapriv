@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -28,6 +29,12 @@ from execution.binance import AiohttpClient, BinanceBroker
 from monitoring.logger import setup_logging
 
 logger = logging.getLogger("trading_bot.fetch")
+
+#: Tetto agli scambi scaricati per coppia. Duecentomila bastano a
+#: misurare l'order flow su qualche ora; il giorno intero di BTCUSDT ne
+#: ha milioni, e scaricarli tutti vuol dire aspettare mezz'ora guardando
+#: una finestra che sembra ferma.
+MAX_TRADE_PER_SIMBOLO = 200_000
 
 
 
@@ -63,7 +70,13 @@ def to_candle(symbol: str, row: list[object]) -> Candle:
 
 
 async def fetch(
-    symbols: list[str], days: int, config_path: Path, *, trade_days: int = 0
+    symbols: list[str],
+    days: int,
+    config_path: Path,
+    *,
+    trade_hours: int = 0,
+    symbols_flusso: list[str] | None = None,
+    progresso: Callable[[str], None] | None = None,
 ) -> int:
     config = load_config(config_path)
     interval = config.data.candle_interval
@@ -99,13 +112,24 @@ async def fetch(
                 candles = [c for c in candles if c.close_time_ms < end_ms]
                 store.add_candles(candles)
                 total += len(candles)
+                if progresso is not None:
+                    progresso(f"{symbol}: {total} candele")
                 cursor = int(str(rows[-1][0])) + step_ms
                 logger.info("%s: %d candele fino a %s", symbol, total, cursor)
-        if trade_days > 0:
+        if trade_hours > 0:
+            # Il flusso ordini solo per le coppie che il bot usa davvero:
+            # per le altre bastano le candele a fare il confronto, e
+            # scaricare milioni di scambi che non verranno usati e' il
+            # modo piu' rapido di far sembrare il programma bloccato.
             totale_trade = await _scarica_flusso(
-                broker, store, symbols, giorni=trade_days, fine_ms=end_ms
+                broker,
+                store,
+                symbols_flusso or symbols,
+                ore=trade_hours,
+                fine_ms=end_ms,
+                progresso=progresso,
             )
-            logger.info("scaricati %d trade (flusso ordini)", totale_trade)
+            logger.info("scaricati %d scambi (flusso ordini)", totale_trade)
     finally:
         store.flush()
         await broker.close()
@@ -119,27 +143,45 @@ async def _scarica_flusso(
     store: ParquetStore,
     symbols: list[str],
     *,
-    giorni: int,
+    ore: int,
     fine_ms: int,
+    massimo_per_simbolo: int = MAX_TRADE_PER_SIMBOLO,
+    progresso: Callable[[str], None] | None = None,
 ) -> int:
-    """Scarica il flusso ordini aggregato degli ultimi giorni.
+    """Scarica il flusso ordini aggregato delle ultime ore.
 
-    E' molto piu' voluminoso delle candele (BTCUSDT fa centinaia di
-    migliaia di trade al giorno), e per questo si scarica una finestra
-    corta e separata. Senza di esso pero' il backtest gira con l'order
-    flow spento, che e' meta' di cio' che guarda la strategia dal vivo.
+    Serve un tetto, e non e' una precauzione teorica: BTCUSDT fa qualche
+    milione di scambi al giorno, che a mille per richiesta sono migliaia
+    di chiamate. Con il throttle lato client diventano decine di minuti,
+    e dalla finestra il programma sembra bloccato. Meglio poche ore
+    complete che un'attesa senza fine, e il tetto viene dichiarato invece
+    che subito.
     """
-    inizio_ms = fine_ms - giorni * 86_400_000
+    inizio_ms = fine_ms - ore * 3_600_000
     totale = 0
     for symbol in symbols:
+        presi = 0
         trade = await broker.agg_trades(symbol, start_ms=inizio_ms, limit=1000)
         while trade:
             dentro = [t for t in trade if t.ts_ms < fine_ms]
+            if presi + len(dentro) > massimo_per_simbolo:
+                dentro = dentro[: massimo_per_simbolo - presi]
             store.add_trades(dentro)
+            presi += len(dentro)
             totale += len(dentro)
+            if progresso is not None:
+                progresso(f"{symbol}: {presi} scambi")
+            logger.info("%s: %d scambi scaricati", symbol, presi)
+            if presi >= massimo_per_simbolo:
+                logger.info(
+                    "%s: raggiunto il tetto di %d scambi, il resto non si scarica "
+                    "(bastano per misurare l'order flow)",
+                    symbol,
+                    massimo_per_simbolo,
+                )
+                break
             if len(dentro) < len(trade) or len(trade) < 1000:
                 break
-            logger.info("%s: %d trade fino a %s", symbol, totale, trade[-1].ts_ms)
             trade = await broker.agg_trades(
                 symbol, from_id=trade[-1].trade_id + 1, limit=1000
             )
@@ -152,13 +194,14 @@ def main() -> int:
     parser.add_argument("--symbols", nargs="*", help="simboli (default: quelli abilitati)")
     parser.add_argument("--config", type=Path, default=Path("config/config.yaml"))
     parser.add_argument(
-        "--giorni-flusso",
+        "--ore-flusso",
         type=int,
         default=0,
-        dest="trade_days",
-        help="giorni di flusso ordini (aggTrades) da scaricare: molto piu' "
+        dest="trade_hours",
+        help="ore di flusso ordini (aggTrades) da scaricare: molto piu' "
         "voluminoso delle candele, ma senza di esso il backtest e' cieco "
-        "su meta' degli ingressi",
+        f"su meta' degli ingressi. Tetto di {MAX_TRADE_PER_SIMBOLO} scambi "
+        "per coppia.",
     )
     args = parser.parse_args()
 
@@ -168,7 +211,7 @@ def main() -> int:
     symbols = args.symbols or [s.symbol for s in config.enabled_symbols]
 
     total = asyncio.run(
-        fetch(symbols, args.days, args.config, trade_days=args.trade_days)
+        fetch(symbols, args.days, args.config, trade_hours=args.trade_hours)
     )
     print(f"scaricate {total} candele in {config.data.parquet_root}")
     return 0 if total else 1

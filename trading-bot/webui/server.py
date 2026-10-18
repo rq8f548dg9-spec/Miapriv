@@ -914,17 +914,33 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
         """Verifica che le chiavi funzionino davvero, prima di avviare."""
         from execution.binance import AiohttpClient, BinanceBroker
 
+        # Le chiavi si preparano prima e si usano dopo: anche in paper,
+        # dove il bot non le userebbe, verificarle ha senso. Si prova
+        # sempre la testnet, perche' e' per quella che servono.
+        modalita = (
+            supervisor.config.mode
+            if supervisor.config.mode is Mode.LIVE
+            else Mode.TESTNET
+        )
         try:
-            credentials = load_credentials(supervisor.config.mode)
+            credentials = load_credentials(modalita)
         except Exception as exc:
             return _error(f"chiavi non disponibili: {exc}")
         if credentials is None:
-            return _error("la modalita' backtest non usa chiavi API")
+            return _error(
+                "nessuna chiave salvata: incollale qui sopra e premi "
+                "«Salva e verifica». Servono solo per la testnet; in paper "
+                "il bot funziona senza."
+            )
 
         from core.clock import LiveClock
 
+        # La verifica parla con la testnet, non con la modalita' corrente:
+        # chiedere a un conto paper che non esiste non direbbe niente.
+        raw = supervisor.config.model_dump()
+        raw["mode"] = modalita.value
         broker = BinanceBroker(
-            config=supervisor.config,
+            config=AppConfig.model_validate(raw),
             credentials=credentials,
             clock=LiveClock(),
             http=AiohttpClient(),
@@ -1012,7 +1028,10 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
         # Il flusso ordini e' molto piu' voluminoso delle candele, quindi
         # ha una finestra corta e separata. Senza, la prova della strategia
         # resta cieca su meta' di cio' che il bot guarda dal vivo.
-        trade_days = max(0, min(int(payload.get("giorni_flusso", 2)), 7))
+        # In ore, non in giorni: un giorno di BTCUSDT sono milioni di
+        # scambi, e il valore precedente faceva sembrare il programma
+        # bloccato per mezz'ora.
+        ore_flusso = max(0, min(int(payload.get("ore_flusso", 6)), 48))
         includi_spente = bool(payload.get("includi_coppie_da_provare", True))
 
         job = Job(name=f"scarico dati ({days} giorni)")
@@ -1029,7 +1048,18 @@ def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Appli
                     for s in supervisor.config.symbols
                     if s.enabled or includi_spente
                 ]
-                total = await fetch(simboli, days, config_path, trade_days=trade_days)
+                total = await fetch(
+                    simboli,
+                    days,
+                    config_path,
+                    trade_hours=ore_flusso,
+                    # Il flusso solo per le coppie che il bot usa: per le
+                    # altre bastano le candele a fare il confronto.
+                    symbols_flusso=[
+                        s.symbol for s in supervisor.config.enabled_symbols
+                    ],
+                    progresso=lambda testo: setattr(job, "message", testo),
+                )
                 job.state = "completato"
                 job.message = f"scaricate {total} candele"
                 job.result = {"candele": total}

@@ -132,3 +132,87 @@ class TestScaricoDelFlussoOrdini:
 
         with pytest.raises(Exception, match="start_ms oppure from_id"):
             await broker.agg_trades("BTCUSDT")
+
+
+class TestScaricoCheFinisce:
+    """Due giorni di flusso ordini su BTCUSDT sono qualche milione di
+    scambi: a mille per richiesta sono migliaia di chiamate, e con il
+    throttle diventano decine di minuti. Dalla finestra sembra bloccato,
+    e in pratica lo e'. Serve un tetto, e serve che si veda il progresso."""
+
+    @pytest.mark.asyncio
+    async def test_il_tetto_ferma_lo_scarico(self) -> None:
+        from execution.binance import HttpResponse
+        from scripts.fetch_history import _scarica_flusso
+        from tests.test_execution import FakeHttp, make_broker
+
+        pagina = [
+            {"a": i, "p": "60000", "q": "0.1", "T": 1_700_000_000_000 + i, "m": False}
+            for i in range(1000)
+        ]
+        http = FakeHttp([HttpResponse(200, pagina)])
+        broker = make_broker(
+            load_config(Path("config/config.yaml")),
+            Credentials(
+                api_key=SecretStr("public"),
+                api_secret=SecretStr("public"),
+                mode=Mode.TESTNET,
+            ),
+            http,
+        )
+
+        class StoreFinto:
+            def __init__(self) -> None:
+                self.scritti = 0
+
+            def add_trades(self, trade: Sequence[object]) -> None:
+                self.scritti += len(trade)
+
+        store = StoreFinto()
+        totale = await _scarica_flusso(
+            broker,
+            store,  # type: ignore[arg-type]
+            ["BTCUSDT"],
+            ore=48,
+            fine_ms=1_700_000_000_000 + 10**9,
+            massimo_per_simbolo=2_500,
+        )
+        assert totale <= 2_500, "senza tetto questo ciclo non finirebbe mai"
+        assert len(http.requests) <= 4
+
+    @pytest.mark.asyncio
+    async def test_riferisce_il_progresso(self) -> None:
+        from execution.binance import HttpResponse
+        from scripts.fetch_history import _scarica_flusso
+        from tests.test_execution import FakeHttp, make_broker
+
+        pagina = [
+            {"a": i, "p": "60000", "q": "0.1", "T": 1_700_000_000_000 + i, "m": False}
+            for i in range(1000)
+        ]
+        http = FakeHttp([HttpResponse(200, pagina)])
+        broker = make_broker(
+            load_config(Path("config/config.yaml")),
+            Credentials(
+                api_key=SecretStr("public"),
+                api_secret=SecretStr("public"),
+                mode=Mode.TESTNET,
+            ),
+            http,
+        )
+
+        class StoreFinto:
+            def add_trades(self, trade: Sequence[object]) -> None: ...
+
+        avanzamenti: list[str] = []
+        await _scarica_flusso(
+            broker,
+            StoreFinto(),  # type: ignore[arg-type]
+            ["BTCUSDT"],
+            ore=1,
+            fine_ms=1_700_000_000_000 + 10**9,
+            massimo_per_simbolo=3_000,
+            progresso=avanzamenti.append,
+        )
+        assert avanzamenti, "senza progresso l'utente vede solo i secondi passare"
+        assert any("BTCUSDT" in m for m in avanzamenti)
