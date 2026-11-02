@@ -32,7 +32,7 @@ Data di nascita: 31 dicembre 1998
 
 [LINGUE]
 - Italiano — madrelingua
-- Inglese — ottima padronanza parlata e scritta
+- Inglese — C2 (padronanza)
 
 [DISPONIBILITA]
 - Trasferte nazionali e internazionali per avviamento e assistenza
@@ -67,8 +67,7 @@ Azienda: Mirai-Tech
 Luogo: Sassuolo
 Periodo: Mar 2026 – Mag 2026
 - Sviluppo e modifica di software PLC e HMI Siemens in TIA Portal e STEP 7.
-- Configurazione e messa in servizio di inverter.
-- Revamping impianti.
+- Configurazione e messa in servizio di inverter nell'ambito di interventi di revamping e adeguamento software su impianti esistenti.
 - Avviamento, collaudo e assistenza post-vendita presso i clienti.
 - Supporto all'integrazione di sistemi robotici ABB e FANUC.
 
