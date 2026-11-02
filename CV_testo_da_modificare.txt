@@ -96,11 +96,11 @@ Periodo: Feb 2022 – Nov 2025
 Titolo: Elettrotecnica — Istituto Tecnico Industriale Leonardo da Vinci
 Dettaglio: Set 2025, in corso
 
-Titolo: Tecnico di automazione PLC e robotica — ISCOM Modena
-Dettaglio: Attestato professionale rilasciato dalla Regione Emilia-Romagna.
+Titolo: Tecnico di automazione PLC e robotica — Attestato professionale della Regione Emilia-Romagna
 
-Titolo: Programmazione PLC e automazione industriale
-Dettaglio: Formazione specialistica su TIA Portal.
+Titolo: Programmazione PLC — ISCOM Modena · Formazione su TIA Portal e sviluppo di logiche di automazione
+
+Titolo: PLC e automazione industriale — Corso online Udemy
 
 
 ===============================================================================
