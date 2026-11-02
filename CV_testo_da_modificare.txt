@@ -1,0 +1,114 @@
+===============================================================================
+CV GEORGE SIMION — TESTO MODIFICABILE
+===============================================================================
+Modifica liberamente il testo sotto, poi rimandamelo (incollato in chat oppure
+come file) e io rigenero il PDF impaginato.
+
+COME FUNZIONA
+  - Le righe fra parentesi quadre, tipo [PROFILO], sono i nomi delle sezioni.
+    Servono a me per rimontare il PDF: non cancellarle e non rinominarle.
+  - Tutto il resto è testo tuo: riscrivilo, accorcialo, allungalo.
+  - Le righe che iniziano con "- " sono i punti elenco. Aggiungine o togline
+    quanti vuoi, basta che inizino con "- ".
+  - Per togliere una sezione intera, cancella la sua riga [NOME] e il contenuto.
+  - Per aggiungere un lavoro, copia un blocco [LAVORO] intero e compilalo.
+  - Nota: ogni punto elenco che supera ~75 caratteri va a capo e occupa due
+    righe nel PDF. Se vuoi restare in una pagina sola, tienili corti.
+===============================================================================
+
+
+[NOME]
+GEORGE SIMION
+
+[RUOLO]
+Programmatore PLC · Software HMI · Commissioning
+
+[CONTATTI]
+Email: simiongeorge@libero.it
+Telefono: 320 2459730
+Città: Carpi (MO)
+Data di nascita: 31 dicembre 1998
+
+[LINGUE]
+- Italiano — madrelingua
+- Inglese — madrelingua
+
+[DISPONIBILITA]
+- Trasferte nazionali e internazionali per avviamento e assistenza
+- Patente B, automunito
+
+[PROFILO]
+Programmatore PLC con esperienza nello sviluppo software per macchine e linee
+di produzione, nelle interfacce HMI e nell'avviamento degli impianti presso i
+clienti. Competenze in ambiente Siemens, dalle sequenze automatiche
+all'integrazione di azionamenti e dispositivi di campo. Il precedente percorso
+nella produzione meccanica CNC completa la preparazione software con una
+conoscenza pratica delle macchine.
+
+[COMPETENZE]
+PLC e programmazione | Siemens S7-1200 e S7-1500, TIA Portal, STEP 7 / SIMATIC Manager · KOP/LAD, SCL e AWL · struttura a FB, FC, DB e UDT · diagnostica su PLC Omron
+HMI e azionamenti | Pannelli Siemens e Weintek · inverter SINAMICS, MICROMASTER, Toshiba e Mitsubishi · encoder, sensoristica IO-Link e attuatori pneumatici
+Reti e dati | PROFINET, PROFIBUS e Modbus RTU · scambio dati con sistemi di supervisione · teleassistenza su rete macchina
+Attività di campo | Avviamento, collaudo, debug online, ricerca guasti e revamping · lettura dello schema elettrico a supporto della diagnostica
+
+[LAVORO]
+Ruolo: Programmatore PLC / Automazione industriale
+Azienda: Technopi Solutions
+Luogo: Modena
+Periodo: Giu 2026 – Attuale
+- Sviluppo software PLC e HMI su Siemens S7-1200 e S7-1500 in TIA Portal.
+- Logiche di movimentazione e posizionamento con encoder e sensori.
+- Scambi di consenso fra macchine di linea e sistemi di supervisione.
+- Avviamento, collaudo e messa a punto degli impianti presso i clienti.
+- Revamping software: su un pallettizzatore, ciclo ridotto di oltre un terzo.
+- Diagnostica e assistenza da remoto e on-site su PLC, HMI e azionamenti.
+- Supporto tecnico alle attività commerciali per soluzioni di automazione.
+
+[LAVORO]
+Ruolo: Programmatore PLC / Robotica
+Azienda: Mirai-Tech
+Luogo: Sassuolo
+Periodo: Mar 2026 – Mag 2026
+- Sviluppo e modifica di software PLC e HMI Siemens in TIA Portal e STEP 7.
+- Configurazione e messa in servizio di inverter SINAMICS e MICROMASTER.
+- Revamping impianti: sostituzione di circa 60 inverter e integrazione PLC.
+- Avviamento, collaudo e assistenza post-vendita presso i clienti.
+- Supporto all'integrazione di sistemi robotici ABB e FANUC.
+
+[LAVORO]
+Ruolo: Programmatore PLC
+Azienda: Evologic
+Luogo: Modena
+Periodo: Nov 2025 – Mar 2026
+- Sviluppo software PLC in TIA Portal, in KOP/LAD e SCL con FB, FC, DB e UDT.
+- Realizzazione e modifica di interfacce HMI, gestione segnali e debug.
+- Configurazione della movimentazione e gestione di I/O digitali e analogici.
+
+[LAVORO]
+Ruolo: Attrezzista / Operatore torni CNC a fantina mobile
+Azienda: Ma-Bo
+Luogo: Correggio
+Periodo: Feb 2022 – Nov 2025
+- Attrezzaggio, piazzamento e programmazione di torni CNC a fantina mobile.
+- Lettura del disegno tecnico, controllo dimensionale e parametri di lavorazione.
+
+[ISTRUZIONE]
+Titolo: Elettrotecnica — Istituto Tecnico Industriale Leonardo da Vinci
+Dettaglio: Set 2025, in corso
+
+Titolo: Tecnico di automazione PLC e robotica — ISCOM Modena
+Dettaglio: Attestato professionale rilasciato dalla Regione Emilia-Romagna.
+
+Titolo: Programmazione PLC e automazione industriale
+Dettaglio: Formazione specialistica su TIA Portal.
+
+
+===============================================================================
+DUE COSE CHE ASPETTANO UNA TUA DECISIONE (cancella questo blocco quando hai
+deciso, non finisce nel PDF)
+
+1. "Patente B, automunito" l'ho aggiunta io. Confermi o tolgo?
+2. "ciclo ridotto di oltre un terzo": il dato reale è da circa 32 a 16-17
+   secondi sul pallet vicino e 20-22 sul lontano. Se preferisci la cifra secca
+   riscrivi tu il punto come vuoi.
+===============================================================================
