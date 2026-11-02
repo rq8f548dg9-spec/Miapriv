@@ -47,7 +47,7 @@ conoscenza pratica delle macchine.
 
 [COMPETENZE]
 PLC e programmazione | Siemens S7-1200 e S7-1500, TIA Portal, STEP 7 / SIMATIC Manager · KOP/LAD, SCL e AWL · struttura a FB, FC, DB e UDT · diagnostica su PLC Omron
-HMI e azionamenti | Pannelli Siemens e Weintek · inverter SINAMICS, MICROMASTER, Toshiba e Mitsubishi · encoder, sensoristica IO-Link e attuatori pneumatici
+HMI e azionamenti | Pannelli Siemens e Weintek · inverter · encoder, sensoristica IO-Link e attuatori pneumatici
 Reti e dati | PROFINET, PROFIBUS e Modbus RTU · scambio dati con sistemi di supervisione · teleassistenza su rete macchina
 Attività di campo | Avviamento, collaudo, debug online, ricerca guasti e revamping · lettura dello schema elettrico a supporto della diagnostica
 
