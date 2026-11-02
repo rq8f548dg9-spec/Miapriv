@@ -1,5 +1,6 @@
 ===============================================================================
 CV GEORGE SIMION — TESTO MODIFICABILE
+Allineato al PDF del 02/11/2026
 ===============================================================================
 Modifica liberamente il testo sotto, poi rimandamelo (incollato in chat oppure
 come file) e io rigenero il PDF impaginato.
@@ -12,8 +13,8 @@ COME FUNZIONA
     quanti vuoi, basta che inizino con "- ".
   - Per togliere una sezione intera, cancella la sua riga [NOME] e il contenuto.
   - Per aggiungere un lavoro, copia un blocco [LAVORO] intero e compilalo.
-  - Nota: ogni punto elenco che supera ~75 caratteri va a capo e occupa due
-    righe nel PDF. Se vuoi restare in una pagina sola, tienili corti.
+  - Il CV sta in una pagina A4 ed è pieno: se allunghi qualcosa, probabilmente
+    dovrai accorciare altrove. Te lo segnalo io quando succede.
 ===============================================================================
 
 
@@ -31,7 +32,7 @@ Data di nascita: 31 dicembre 1998
 
 [LINGUE]
 - Italiano — madrelingua
-- Inglese — madrelingua
+- Inglese — ottima padronanza parlata e scritta
 
 [DISPONIBILITA]
 - Trasferte nazionali e internazionali per avviamento e assistenza
@@ -41,12 +42,10 @@ Data di nascita: 31 dicembre 1998
 Programmatore PLC con esperienza nello sviluppo software per macchine e linee
 di produzione, nelle interfacce HMI e nell'avviamento degli impianti presso i
 clienti. Competenze in ambiente Siemens, dalle sequenze automatiche
-all'integrazione di azionamenti e dispositivi di campo. Il precedente percorso
-nella produzione meccanica CNC completa la preparazione software con una
-conoscenza pratica delle macchine.
+all'integrazione di azionamenti e dispositivi di campo.
 
 [COMPETENZE]
-PLC e programmazione | Siemens S7-1200 e S7-1500, TIA Portal, STEP 7 / SIMATIC Manager · KOP/LAD, SCL e AWL · struttura a FB, FC, DB e UDT · diagnostica su PLC Omron
+PLC e programmazione | TIA Portal, STEP 7 / SIMATIC Manager · KOP/LAD, SCL e AWL · struttura a FB, FC, DB e UDT · diagnostica su PLC Omron
 HMI e azionamenti | Pannelli Siemens e Weintek · inverter · encoder, sensoristica IO-Link e attuatori pneumatici
 Reti e dati | PROFINET, PROFIBUS e Modbus RTU · scambio dati con sistemi di supervisione · teleassistenza su rete macchina
 Attività di campo | Avviamento, collaudo, debug online, ricerca guasti e revamping · lettura dello schema elettrico a supporto della diagnostica
@@ -56,12 +55,10 @@ Ruolo: Programmatore PLC / Automazione industriale
 Azienda: Technopi Solutions
 Luogo: Modena
 Periodo: Giu 2026 – Attuale
-- Sviluppo software PLC e HMI su Siemens S7-1200 e S7-1500 in TIA Portal.
-- Logiche di movimentazione e posizionamento con encoder e sensori.
-- Scambi di consenso fra macchine di linea e sistemi di supervisione.
-- Avviamento, collaudo e messa a punto degli impianti presso i clienti.
-- Revamping software: su un pallettizzatore, ciclo ridotto di oltre un terzo.
-- Diagnostica e assistenza da remoto e on-site su PLC, HMI e azionamenti.
+- Sviluppo e modifica di software PLC e interfacce HMI per macchine e linee automatiche, con gestione delle sequenze operative, dei consensi e degli scambi dati tra le macchine.
+- Gestione delle logiche di movimentazione e posizionamento mediante encoder, sensori e azionamenti.
+- Avviamento, collaudo e messa a punto del funzionamento degli impianti in campo, presso i clienti.
+- Interventi di revamping e adeguamento software su impianti esistenti, con diagnostica e assistenza su PLC, HMI e azionamenti.
 - Supporto tecnico alle attività commerciali per soluzioni di automazione.
 
 [LAVORO]
@@ -70,8 +67,8 @@ Azienda: Mirai-Tech
 Luogo: Sassuolo
 Periodo: Mar 2026 – Mag 2026
 - Sviluppo e modifica di software PLC e HMI Siemens in TIA Portal e STEP 7.
-- Configurazione e messa in servizio di inverter SINAMICS e MICROMASTER.
-- Revamping impianti: sostituzione di circa 60 inverter e integrazione PLC.
+- Configurazione e messa in servizio di inverter.
+- Revamping impianti.
 - Avviamento, collaudo e assistenza post-vendita presso i clienti.
 - Supporto all'integrazione di sistemi robotici ABB e FANUC.
 
@@ -93,8 +90,7 @@ Periodo: Feb 2022 – Nov 2025
 - Lettura del disegno tecnico, controllo dimensionale e parametri di lavorazione.
 
 [ISTRUZIONE]
-Titolo: Elettrotecnica — Istituto Tecnico Industriale Leonardo da Vinci
-Dettaglio: Set 2025, in corso
+Titolo: Elettrotecnica — Istituto Tecnico Industriale Leonardo da Vinci · Set 2025, in corso
 
 Titolo: Tecnico di Automazione e Robotica Industriale — Regione Emilia-Romagna · Feb 2026
 Credenziale (non stampata nel PDF): SCC n. 451902/2026
@@ -103,14 +99,3 @@ Titolo: Corso di Programmazione PLC — Iscom Emilia Romagna · Nov 2025
 
 Titolo: TIA Portal Master Project (Level 5) — Udemy · Mar 2026
 Credenziale (non stampata nel PDF): UC-758a86e1-4c8d-48e9-a30c-5e4ca5483941
-
-
-===============================================================================
-DUE COSE CHE ASPETTANO UNA TUA DECISIONE (cancella questo blocco quando hai
-deciso, non finisce nel PDF)
-
-1. "Patente B, automunito" l'ho aggiunta io. Confermi o tolgo?
-2. "ciclo ridotto di oltre un terzo": il dato reale è da circa 32 a 16-17
-   secondi sul pallet vicino e 20-22 sul lontano. Se preferisci la cifra secca
-   riscrivi tu il punto come vuoi.
-===============================================================================
