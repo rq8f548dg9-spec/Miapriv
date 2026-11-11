@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Scarico Pin e Insta</title>
+
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Scarico">
+<meta name="theme-color" content="#14121a">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/icon-180.png">
+<link rel="icon" href="/icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ------------------------------------------------------------------ login -->
+<main id="vista-login" class="vista" hidden>
+  <div class="scatola-login">
+    <div class="marchio" aria-hidden="true">
+      <img src="/icons/icon-192.png" alt="" width="64" height="64">
+    </div>
+    <h1>Scarico Pin e Insta</h1>
+    <p class="sottotitolo">Sito privato. Serve la password.</p>
+    <form id="form-login" autocomplete="on">
+      <label class="etichetta" for="password">Password</label>
+      <input id="password" name="password" type="password" inputmode="text"
+             autocomplete="current-password" required placeholder="••••••••••">
+      <button id="btn-login" class="bottone primario" type="submit">Entra</button>
+      <p id="errore-login" class="errore" role="alert" hidden></p>
+    </form>
+  </div>
+</main>
+
+<!-- -------------------------------------------------------------------- app -->
+<div id="vista-app" class="vista" hidden>
+  <header class="testata">
+    <h1>Scarico Pin e Insta</h1>
+    <button id="btn-esci" class="bottone fantasma piccolo" type="button">Esci</button>
+  </header>
+
+  <main class="contenuto">
+    <section class="scheda" aria-labelledby="titolo-incolla">
+      <h2 id="titolo-incolla" class="titolo-sezione">Link del pin, del reel o del post</h2>
+      <form id="form-link">
+        <textarea id="campo-link" rows="2" inputmode="url" autocapitalize="off"
+                  autocorrect="off" spellcheck="false"
+                  placeholder="https://www.pinterest.it/pin/… oppure https://www.instagram.com/reel/…"></textarea>
+        <div class="riga-bottoni">
+          <button id="btn-incolla" class="bottone secondario" type="button">Incolla</button>
+          <button id="btn-trova" class="bottone primario" type="submit">Trova il video</button>
+        </div>
+      </form>
+      <p id="stato" class="stato" role="status" aria-live="polite" hidden></p>
+    </section>
+
+    <section id="risultati" class="risultati" aria-label="Risultati"></section>
+
+    <section class="scheda richiudibile">
+      <details id="dettagli-ios">
+        <summary>
+          <span>Come farlo salvare in «scarico pin e insta»</span>
+        </summary>
+        <div class="corpo-dettagli">
+          <ol class="passi">
+            <li>Apri <strong>File</strong> sull'iPhone e crea la cartella
+              <strong>scarico pin e insta</strong> (dentro «Su iPhone» o «iCloud Drive»).</li>
+            <li>Vai in <strong>Impostazioni › App › Safari › Download</strong>,
+              scegli <strong>Altro…</strong> e seleziona quella cartella.</li>
+            <li>Da qui in avanti ogni file che scarichi con questo sito finisce lì dentro.</li>
+            <li>Per avere l'icona sulla schermata Home: apri questo sito in Safari,
+              premi <strong>Condividi</strong> e poi <strong>Aggiungi a Home</strong>.</li>
+          </ol>
+          <p class="nota">
+            Se il download non parte quando apri il sito dall'icona della schermata Home,
+            usa il bottone <strong>Apri in Safari</strong>: iOS consente il download
+            solo dentro Safari in alcune versioni.
+          </p>
+          <div class="blocco-token">
+            <span class="etichetta">Token per l'app Scorciatoie</span>
+            <code id="token-scorciatoia">—</code>
+            <button id="btn-copia-token" class="bottone secondario piccolo" type="button">Copia</button>
+            <p class="nota">
+              Serve solo se vuoi salvare dal foglio di condivisione invece che da Safari.
+              La ricetta della scorciatoia è nel README, sezione «Scorciatoia iOS».
+            </p>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section id="sezione-storico" class="scheda richiudibile" hidden>
+      <details>
+        <summary><span>Ultimi scaricati</span></summary>
+        <div class="corpo-dettagli">
+          <ul id="storico" class="storico"></ul>
+          <button id="btn-pulisci-storico" class="bottone fantasma piccolo" type="button">Svuota l'elenco</button>
+        </div>
+      </details>
+    </section>
+
+    <footer class="piede">
+      <span id="info-server">—</span>
+    </footer>
+  </main>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

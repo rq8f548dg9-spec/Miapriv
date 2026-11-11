@@ -1,0 +1,292 @@
+/* Scarico Pin e Insta - foglio di stile unico, pensato prima per iPhone. */
+
+:root {
+  --fondo: #14121a;
+  --fondo-alto: #1e1b26;
+  --fondo-scheda: #221e2c;
+  --bordo: #332d42;
+  --testo: #f4f1f8;
+  --testo-tenue: #a79fb8;
+  --accento: #b14cff;
+  --accento-scuro: #7c2fd4;
+  --accento-testo: #ffffff;
+  --buono: #3ddc97;
+  --male: #ff6b6b;
+  --raggio: 16px;
+  --raggio-piccolo: 11px;
+  --gutter: 16px;
+  --ombra: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --fondo: #f6f4fa;
+    --fondo-alto: #ffffff;
+    --fondo-scheda: #ffffff;
+    --bordo: #e2dcee;
+    --testo: #1b1725;
+    --testo-tenue: #645c77;
+    --ombra: 0 8px 24px rgba(40, 20, 70, 0.1);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--fondo);
+  color: var(--testo);
+  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: break-word;
+}
+
+[hidden] { display: none !important; }
+
+/* ------------------------------------------------------------------ login */
+
+.scatola-login {
+  max-width: 420px;
+  margin: 0 auto;
+  padding: max(56px, env(safe-area-inset-top)) var(--gutter) 40px;
+  text-align: center;
+}
+.marchio img { border-radius: 18px; box-shadow: var(--ombra); }
+.scatola-login h1 { font-size: 1.5rem; margin: 18px 0 4px; }
+.sottotitolo { color: var(--testo-tenue); margin: 0 0 28px; font-size: 0.95rem; }
+.scatola-login form { display: grid; gap: 10px; text-align: left; }
+
+.etichetta {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--testo-tenue);
+}
+
+/* ------------------------------------------------------------------- testata */
+
+.testata {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: calc(12px + env(safe-area-inset-top)) var(--gutter) 12px;
+  background: color-mix(in srgb, var(--fondo) 88%, transparent);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--bordo);
+}
+.testata h1 { font-size: 1.05rem; margin: 0; letter-spacing: -0.01em; }
+
+.contenuto {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 16px var(--gutter) calc(40px + env(safe-area-inset-bottom));
+  display: grid;
+  gap: 14px;
+}
+
+/* ------------------------------------------------------------------- schede */
+
+.scheda {
+  background: var(--fondo-scheda);
+  border: 1px solid var(--bordo);
+  border-radius: var(--raggio);
+  padding: 16px;
+}
+.titolo-sezione {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--testo-tenue);
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+
+input[type="password"], textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 1rem; /* sotto i 16px iOS ingrandisce la pagina da solo */
+  color: var(--testo);
+  background: var(--fondo-alto);
+  border: 1px solid var(--bordo);
+  border-radius: var(--raggio-piccolo);
+  padding: 13px 14px;
+  resize: none;
+}
+input[type="password"]:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accento);
+  outline-offset: 1px;
+  border-color: var(--accento);
+}
+
+.riga-bottoni { display: flex; gap: 10px; margin-top: 10px; }
+.riga-bottoni .primario { flex: 1 1 auto; }
+
+.bottone {
+  font: inherit;
+  font-weight: 600;
+  /* Vale anche per i link vestiti da bottone, come «Apri in Safari». */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  text-decoration: none;
+  border: 1px solid transparent;
+  border-radius: var(--raggio-piccolo);
+  padding: 13px 16px;
+  min-height: 48px;           /* bersaglio comodo col pollice */
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.08s ease, opacity 0.15s ease;
+}
+.bottone:active { transform: scale(0.985); }
+.bottone[disabled] { opacity: 0.55; cursor: default; }
+.primario {
+  background: linear-gradient(135deg, var(--accento), var(--accento-scuro));
+  color: var(--accento-testo);
+  box-shadow: 0 6px 18px rgba(124, 47, 212, 0.3);
+}
+.secondario {
+  background: var(--fondo-alto);
+  color: var(--testo);
+  border-color: var(--bordo);
+}
+.fantasma { background: transparent; color: var(--testo-tenue); border-color: var(--bordo); }
+.piccolo { min-height: 36px; padding: 7px 12px; font-size: 0.85rem; }
+
+/* -------------------------------------------------------------- messaggi */
+
+.stato, .errore {
+  margin: 12px 0 0;
+  font-size: 0.9rem;
+  padding: 11px 13px;
+  border-radius: var(--raggio-piccolo);
+  background: var(--fondo-alto);
+  border: 1px solid var(--bordo);
+}
+.stato.lavorando { border-color: var(--accento); }
+.stato.fatto { border-color: var(--buono); }
+.errore, .stato.guaio {
+  border-color: var(--male);
+  color: var(--male);
+  background: color-mix(in srgb, var(--male) 12%, var(--fondo-alto));
+}
+
+.filatoio {
+  display: inline-block;
+  width: 14px; height: 14px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border: 2px solid color-mix(in srgb, var(--accento) 35%, transparent);
+  border-top-color: var(--accento);
+  border-radius: 50%;
+  animation: gira 0.7s linear infinite;
+}
+@keyframes gira { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .filatoio { animation-duration: 2s; }
+  .bottone:active { transform: none; }
+}
+
+/* ------------------------------------------------------------- risultati */
+
+.risultati { display: grid; gap: 14px; }
+
+.risultato {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 14px;
+  padding: 14px;
+  background: var(--fondo-scheda);
+  border: 1px solid var(--bordo);
+  border-radius: var(--raggio);
+  box-shadow: var(--ombra);
+}
+.risultato .anteprima {
+  width: 96px;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border-radius: 12px;
+  background: var(--fondo-alto);
+  border: 1px solid var(--bordo);
+}
+.risultato h3 {
+  margin: 0 0 4px;
+  font-size: 0.98rem;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.meta { color: var(--testo-tenue); font-size: 0.82rem; margin: 0 0 10px; }
+.meta .pallino { opacity: 0.5; margin: 0 6px; }
+.azioni { display: flex; flex-wrap: wrap; gap: 8px; }
+.azioni .bottone { flex: 1 1 120px; }
+
+@media (max-width: 380px) {
+  .risultato { grid-template-columns: 72px 1fr; }
+  .risultato .anteprima { width: 72px; }
+}
+
+/* ------------------------------------------------- blocchi richiudibili */
+
+.richiudibile { padding: 0; }
+.richiudibile summary {
+  padding: 15px 16px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.93rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  list-style: none;
+}
+.richiudibile summary::-webkit-details-marker { display: none; }
+.richiudibile summary::after {
+  content: "›";
+  color: var(--testo-tenue);
+  font-size: 1.3rem;
+  transform: rotate(90deg);
+  transition: transform 0.2s ease;
+}
+.richiudibile details[open] summary::after { transform: rotate(270deg); }
+.corpo-dettagli { padding: 0 16px 16px; border-top: 1px solid var(--bordo); padding-top: 14px; }
+
+.passi { margin: 0; padding-left: 20px; display: grid; gap: 9px; font-size: 0.92rem; }
+.nota { color: var(--testo-tenue); font-size: 0.85rem; margin: 12px 0 0; }
+
+.blocco-token { margin-top: 16px; display: grid; gap: 8px; }
+.blocco-token code {
+  display: block;
+  font-size: 0.72rem;
+  word-break: break-all;
+  background: var(--fondo-alto);
+  border: 1px solid var(--bordo);
+  border-radius: var(--raggio-piccolo);
+  padding: 10px 12px;
+  color: var(--testo-tenue);
+}
+.blocco-token .bottone { justify-self: start; }
+
+/* ---------------------------------------------------------------- storico */
+
+.storico { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 8px; }
+.storico li {
+  font-size: 0.86rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--bordo);
+}
+.storico li:last-child { border-bottom: none; padding-bottom: 0; }
+.storico .quando { color: var(--testo-tenue); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.piede { text-align: center; color: var(--testo-tenue); font-size: 0.75rem; padding-top: 8px; }
