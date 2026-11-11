@@ -581,14 +581,18 @@ async function conBiglietti(pezzi: Elemento[], base: string) {
 
 /* ------------------------------------------------------------------ server */
 
-Deno.serve(async (richiesta: Request) => {
+async function gestisci(richiesta: Request): Promise<Response> {
   const url = new URL(richiesta.url);
 
-  // Su Supabase la funzione vive sotto /functions/v1/<nome>: tutto il sito
-  // deve sapere questo prefisso, altrimenti i suoi link cadono nel vuoto.
-  const prefisso = url.pathname.match(/^\/functions\/v1\/[^/]+/)?.[0] ?? "";
-  const percorso = url.pathname.slice(prefisso.length) || "/";
-  const base = prefisso;
+  // Su Supabase la funzione vive sotto /functions/v1/<nome>, ma a seconda del
+  // runtime il path puo' arrivare gia' come /<nome>/<sottopath>. Normalizziamo
+  // entrambi i casi: "parti[0]" e' il nome della funzione, il resto e' il
+  // percorso interno, e la "base" (quella che vede il browser) e' sempre
+  // /functions/v1/<nome>, altrimenti i link del sito cadono nel vuoto.
+  const parti = url.pathname.replace(/^\/functions\/v1/, "").split("/").filter(Boolean);
+  const nomeFunzione = parti[0] ?? "";
+  const percorso = "/" + parti.slice(1).join("/");
+  const base = nomeFunzione ? `/functions/v1/${nomeFunzione}` : "";
 
   try {
     if (percorso === "/" || percorso === "") {
@@ -675,4 +679,22 @@ Deno.serve(async (richiesta: Request) => {
     console.error("errore non previsto:", errore);
     return json({ detail: "Qualcosa e’ andato storto sul server." }, 500);
   }
+}
+
+// La pagina del sito vive su un altro dominio (GitHub Pages); la funzione qui
+// fa solo da API. Servono quindi gli header CORS, e la risposta alla preflight.
+const CORS: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type, X-Chiave",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Max-Age": "86400",
+};
+
+Deno.serve(async (richiesta: Request) => {
+  if (richiesta.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS });
+  }
+  const risposta = await gestisci(richiesta);
+  for (const [chiave, valore] of Object.entries(CORS)) risposta.headers.set(chiave, valore);
+  return risposta;
 });

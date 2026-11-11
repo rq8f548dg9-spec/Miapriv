@@ -128,10 +128,9 @@ function durata(secondi) {
 /* ------------------------------------------------------------ avvio vista */
 
 async function avvia() {
-  if (!chiave) {
-    el.vistaChiave.hidden = false;
-    return;
-  }
+  /* Niente blocco se manca la chiave: lo decide il server. Se e' aperto,
+     /api/me risponde 200 e mostriamo l'app; se serve la chiave, risponde 401
+     e allora chiediamo il link personale (gestito nel catch qui sotto). */
   try {
     const info = await chiama('/api/me');
     el.vistaApp.hidden = false;
