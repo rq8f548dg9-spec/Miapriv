@@ -72,6 +72,7 @@ class Item:
             "width": self.width,
             "height": self.height,
             "filesize": self.filesize,
+            "mime": mime_di(self.ext, self.kind),
             "has_thumb": bool(self.thumbnail),
             "merge": self.needs_merge,
         }
@@ -80,6 +81,27 @@ class Item:
 # --------------------------------------------------------------------------- #
 # Nomi dei file
 # --------------------------------------------------------------------------- #
+
+# iOS decide "Salva video" o "Salva immagine" dal tipo MIME del file condiviso:
+# se il tipo e' sbagliato o generico, la voce per la galleria non compare.
+MIME_PER_ESTENSIONE = {
+    "mp4": "video/mp4",
+    "m4v": "video/x-m4v",
+    "mov": "video/quicktime",
+    "webm": "video/webm",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "webp": "image/webp",
+    "gif": "image/gif",
+}
+
+
+def mime_di(ext: str, kind: str) -> str:
+    pulita = (ext or "").lower().lstrip(".")
+    difetto = "video/mp4" if kind == "video" else "image/jpeg"
+    return MIME_PER_ESTENSIONE.get(pulita, difetto)
+
 
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
 _SPACES = re.compile(r"\s+")

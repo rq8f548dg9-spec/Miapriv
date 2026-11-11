@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import CHIAVE
 from server import main
 from server.auth import make_token
 from server.extractor import Item
@@ -68,10 +69,9 @@ def client(monkeypatch):
     # Il finto CDN sta su 127.0.0.1, che la difesa contro le richieste interne
     # blocca giustamente: qui la disattivo solo per la durata della prova.
     monkeypatch.setattr(main, "assert_public_url", lambda _url: None)
-    main._failed_logins.clear()
+    main._tentativi.clear()
     with TestClient(main.app) as c:
-        risposta = c.post("/api/login", json={"password": "password-di-prova-lunga"})
-        c.headers.update({"X-Token": risposta.json()["token"]})
+        c.headers.update({"X-Chiave": CHIAVE})
         yield c
 
 
@@ -97,6 +97,15 @@ def test_il_file_arriva_intero(client, cdn):
     assert risposta.status_code == 200
     assert risposta.content == CORPO
     assert risposta.headers["content-type"].startswith("video/mp4")
+
+
+def test_con_apri_il_file_non_e_da_salvare(client, cdn):
+    """E' il modo in cui la pagina legge il video per passarlo alla galleria."""
+    biglietto = _prepara(cdn)
+    risposta = client.get(f"/api/file/prova1?t={biglietto}&apri=1")
+    assert risposta.status_code == 200
+    assert risposta.content == CORPO
+    assert "content-disposition" not in risposta.headers
 
 
 def test_safari_riceve_il_nome_giusto(client, cdn):

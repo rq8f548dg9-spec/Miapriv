@@ -1,65 +1,99 @@
-/* Scarico Pin e Insta - logica del sito. Nessuna libreria esterna. */
+/* Scarico - logica del sito. Nessuna libreria.
+
+   Il punto delicato di tutta l'app e' il salvataggio in galleria.
+   Su iOS nessuna pagina web puo' scrivere in Foto da sola: l'unica via e'
+   il foglio di condivisione (navigator.share con un file), dove compare
+   «Salva video» o «Salva immagine». Quindi la pagina scarica il file in
+   memoria e poi lo passa al foglio. */
 'use strict';
 
-const CHIAVE_TOKEN = 'spi.token';
-const CHIAVE_STORICO = 'spi.storico';
-const MAX_STORICO = 20;
+const CHIAVE_SALVATA = 'scarico.k';
+const GUIDA_VISTA = 'scarico.guida';
+const PROMEMORIA_VISTO = 'scarico.home';
+const LIMITE_MEMORIA = 400 * 1024 * 1024; // oltre, il telefono rischia di non farcela
 
 const $ = (sel) => document.querySelector(sel);
 
 const el = {
-  vistaLogin: $('#vista-login'),
+  vistaChiave: $('#vista-chiave'),
   vistaApp: $('#vista-app'),
-  formLogin: $('#form-login'),
-  password: $('#password'),
-  btnLogin: $('#btn-login'),
-  erroreLogin: $('#errore-login'),
-  btnEsci: $('#btn-esci'),
-  formLink: $('#form-link'),
-  campoLink: $('#campo-link'),
-  btnIncolla: $('#btn-incolla'),
-  btnTrova: $('#btn-trova'),
+  form: $('#form-link'),
+  campo: $('#campo-link'),
+  btnPrincipale: $('#btn-principale'),
   stato: $('#stato'),
   risultati: $('#risultati'),
-  tokenScorciatoia: $('#token-scorciatoia'),
-  btnCopiaToken: $('#btn-copia-token'),
-  sezioneStorico: $('#sezione-storico'),
-  storico: $('#storico'),
-  btnPulisciStorico: $('#btn-pulisci-storico'),
+  guida: $('#guida'),
+  btnChiudiGuida: $('#btn-chiudi-guida'),
+  promemoria: $('#aggiungi-home'),
+  btnChiudiPromemoria: $('#btn-chiudi-promemoria'),
   infoServer: $('#info-server'),
-  dettagliIos: $('#dettagli-ios'),
+  spia: $('#spia'),
+  toast: $('#toast'),
+  manifesto: $('#manifesto'),
 };
 
 /* ----------------------------------------------------------- memoria locale */
-/* Il localStorage puo' mancare (navigazione privata, dati del sito bloccati):
-   ogni accesso e' protetto, e il sito funziona comunque senza. */
 
 function leggi(chiave, difetto = null) {
   try {
     const grezzo = localStorage.getItem(chiave);
-    return grezzo === null ? difetto : JSON.parse(grezzo);
+    return grezzo === null ? difetto : grezzo;
   } catch (_) {
     return difetto;
   }
 }
-
 function scrivi(chiave, valore) {
-  try {
-    localStorage.setItem(chiave, JSON.stringify(valore));
-  } catch (_) {
-    /* pazienza: si perde solo la comodita' */
+  try { localStorage.setItem(chiave, valore); } catch (_) {}
+}
+
+/* -------------------------------------------------------- chiave d'accesso */
+
+function trovaChiave() {
+  const daUrl = new URLSearchParams(location.search).get('k');
+  if (daUrl) {
+    scrivi(CHIAVE_SALVATA, daUrl);
+    return daUrl;
   }
+  /* In Safari e nell'app aggiunta alla Home lo spazio di memoria e' separato,
+     per questo la chiave deve restare dentro l'indirizzo: qui il salvataggio
+     locale e' solo una rete di sicurezza. */
+  return leggi(CHIAVE_SALVATA, '');
 }
 
-function cancella(chiave) {
-  try {
-    localStorage.removeItem(chiave);
-  } catch (_) {}
+const chiave = trovaChiave();
+
+/* Il manifest deve portarsi dietro la chiave, altrimenti l'icona sulla Home
+   rischia di aprire l'indirizzo nudo e di non entrare piu'. */
+if (chiave && el.manifesto) {
+  el.manifesto.href = '/manifest.webmanifest?k=' + encodeURIComponent(chiave);
 }
 
-let token = leggi(CHIAVE_TOKEN);
+async function chiama(percorso, opzioni = {}) {
+  const intestazioni = Object.assign({ 'Content-Type': 'application/json' }, opzioni.headers || {});
+  if (chiave) intestazioni['X-Chiave'] = chiave;
+  const risposta = await fetch(percorso, Object.assign({}, opzioni, { headers: intestazioni }));
+  let dati = null;
+  try { dati = await risposta.json(); } catch (_) {}
+  if (!risposta.ok) {
+    const errore = new Error((dati && dati.detail) || 'Errore ' + risposta.status + '.');
+    errore.stato = risposta.status;
+    throw errore;
+  }
+  return dati;
+}
 
-/* ------------------------------------------------------------------- utilita' */
+/* ------------------------------------------------------------------ aiuti */
+
+function toast(testo, tipo = '') {
+  el.toast.textContent = testo;
+  el.toast.className = 'toast visibile' + (tipo ? ' ' + tipo : '');
+  el.toast.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => {
+    el.toast.classList.remove('visibile');
+    setTimeout(() => { el.toast.hidden = true; }, 250);
+  }, 3600);
+}
 
 function mostraStato(testo, classe = '', conFilatoio = false) {
   el.stato.className = 'stato' + (classe ? ' ' + classe : '');
@@ -72,319 +106,329 @@ function mostraStato(testo, classe = '', conFilatoio = false) {
   el.stato.appendChild(document.createTextNode(testo));
   el.stato.hidden = false;
 }
+function nascondiStato() { el.stato.hidden = true; }
 
-function nascondiStato() {
-  el.stato.hidden = true;
-}
-
-function pesoLeggibile(byte) {
+function peso(byte) {
   if (!byte) return null;
+  if (byte < 1048576) return Math.max(1, Math.round(byte / 1024)) + ' kB';
   const mb = byte / 1048576;
-  return mb >= 1000 ? (mb / 1024).toFixed(1) + ' GB' : mb.toFixed(mb < 10 ? 1 : 0) + ' MB';
+  if (mb >= 1000) return (mb / 1024).toFixed(1) + ' GB';
+  return mb.toFixed(mb < 10 ? 1 : 0) + ' MB';
 }
-
-function durataLeggibile(secondi) {
+function durata(secondi) {
   if (!secondi) return null;
-  const m = Math.floor(secondi / 60);
-  const s = Math.round(secondi % 60);
-  return m + ':' + String(s).padStart(2, '0');
+  return Math.floor(secondi / 60) + ':' + String(Math.round(secondi % 60)).padStart(2, '0');
 }
 
-async function chiama(percorso, opzioni = {}) {
-  const intestazioni = Object.assign({ 'Content-Type': 'application/json' }, opzioni.headers || {});
-  if (token) intestazioni['X-Token'] = token;
-  const risposta = await fetch(percorso, Object.assign({}, opzioni, { headers: intestazioni }));
-  if (risposta.status === 401) {
-    esci(true);
-    throw new Error('Sessione scaduta. Rifai il login.');
-  }
-  let dati = null;
-  try {
-    dati = await risposta.json();
-  } catch (_) {}
-  if (!risposta.ok) {
-    throw new Error((dati && dati.detail) || 'Errore ' + risposta.status + '.');
-  }
-  return dati;
-}
+/* ------------------------------------------------------------ avvio vista */
 
-/* ----------------------------------------------------------------- viste */
-
-function mostraLogin() {
-  el.vistaApp.hidden = true;
-  el.vistaLogin.hidden = false;
-  el.password.focus();
-}
-
-function mostraApp() {
-  el.vistaLogin.hidden = true;
-  el.vistaApp.hidden = false;
-  disegnaStorico();
-  caricaInfo();
-  prendiLinkDallaUrl();
-}
-
-function esci(silenzioso = false) {
-  token = null;
-  cancella(CHIAVE_TOKEN);
-  el.risultati.innerHTML = '';
-  nascondiStato();
-  mostraLogin();
-  if (!silenzioso) return;
-  el.erroreLogin.textContent = 'Sessione scaduta: rifai il login.';
-  el.erroreLogin.hidden = false;
-}
-
-/* ----------------------------------------------------------------- login */
-
-el.formLogin.addEventListener('submit', async (evento) => {
-  evento.preventDefault();
-  el.erroreLogin.hidden = true;
-  el.btnLogin.disabled = true;
-  el.btnLogin.textContent = 'Un attimo…';
-  try {
-    const dati = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: el.password.value }),
-    }).then(async (r) => {
-      const corpo = await r.json().catch(() => null);
-      if (!r.ok) throw new Error((corpo && corpo.detail) || 'Errore ' + r.status + '.');
-      return corpo;
-    });
-    token = dati.token;
-    scrivi(CHIAVE_TOKEN, token);
-    el.password.value = '';
-    mostraApp();
-  } catch (errore) {
-    el.erroreLogin.textContent = errore.message;
-    el.erroreLogin.hidden = false;
-  } finally {
-    el.btnLogin.disabled = false;
-    el.btnLogin.textContent = 'Entra';
-  }
-});
-
-el.btnEsci.addEventListener('click', () => esci());
-
-/* ------------------------------------------------------- info dal server */
-
-async function caricaInfo() {
-  try {
-    const info = await chiama('/api/me');
-    el.tokenScorciatoia.textContent = info.token_scorciatoia;
-    const pezzi = ['v' + info.versione];
-    if (!info.ffmpeg) pezzi.push('senza ffmpeg');
-    pezzi.push(info.cookie_instagram ? 'cookie Instagram attivi' : 'senza cookie Instagram');
-    if (info.limite_mb) pezzi.push('max ' + info.limite_mb + ' MB');
-    el.infoServer.textContent = pezzi.join(' · ');
-  } catch (_) {
-    el.infoServer.textContent = '';
-  }
-}
-
-el.btnCopiaToken.addEventListener('click', async () => {
-  const testo = el.tokenScorciatoia.textContent || '';
-  try {
-    await navigator.clipboard.writeText(testo);
-    el.btnCopiaToken.textContent = 'Copiato';
-  } catch (_) {
-    el.btnCopiaToken.textContent = 'Copia a mano';
-  }
-  setTimeout(() => {
-    el.btnCopiaToken.textContent = 'Copia';
-  }, 1800);
-});
-
-/* ------------------------------------------------------------ incolla link */
-
-el.btnIncolla.addEventListener('click', async () => {
-  try {
-    const testo = await navigator.clipboard.readText();
-    if (testo && testo.trim()) {
-      el.campoLink.value = testo.trim();
-      el.formLink.requestSubmit();
-      return;
-    }
-    mostraStato('Gli appunti sono vuoti.', 'guaio');
-  } catch (_) {
-    /* Su iOS la lettura degli appunti chiede un permesso che l'utente puo'
-       negare: in quel caso resta l'incolla a mano. */
-    el.campoLink.focus();
-    mostraStato('iOS non mi lascia leggere gli appunti: tieni premuto nel campo e scegli «Incolla».', 'guaio');
-  }
-});
-
-/* ------------------------------------------------------------- risoluzione */
-
-el.formLink.addEventListener('submit', async (evento) => {
-  evento.preventDefault();
-  const grezzo = el.campoLink.value.trim();
-  if (!grezzo) {
-    mostraStato('Incolla prima un link.', 'guaio');
+async function avvia() {
+  if (!chiave) {
+    el.vistaChiave.hidden = false;
     return;
   }
-  el.btnTrova.disabled = true;
-  el.risultati.innerHTML = '';
-  mostraStato('Sto cercando il video…', 'lavorando', true);
   try {
-    const dati = await chiama('/api/resolve', { method: 'POST', body: JSON.stringify({ url: grezzo }) });
+    const info = await chiama('/api/me');
+    el.vistaApp.hidden = false;
+    const pezzi = ['v' + info.versione];
+    if (!info.ffmpeg) pezzi.push('senza ffmpeg');
+    if (!info.cookie_instagram) pezzi.push('senza cookie Instagram');
+    el.infoServer.textContent = pezzi.join(' · ');
+    if (!leggi(GUIDA_VISTA)) el.guida.hidden = false;
+    mostraPromemoriaHome();
+    prendiLinkDallaUrl();
+  } catch (errore) {
+    if (errore.stato === 401) {
+      el.vistaChiave.hidden = false;
+      return;
+    }
+    el.vistaApp.hidden = false;
+    toast(errore.message, 'no');
+  }
+}
+
+function inApp() {
+  return window.navigator.standalone === true ||
+    window.matchMedia('(display-mode: standalone)').matches;
+}
+
+function mostraPromemoriaHome() {
+  if (inApp() || leggi(PROMEMORIA_VISTO)) return;
+  const iOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  if (!iOS) return;
+  el.promemoria.hidden = false;
+}
+
+el.btnChiudiGuida.addEventListener('click', () => {
+  el.guida.hidden = true;
+  scrivi(GUIDA_VISTA, '1');
+});
+el.btnChiudiPromemoria.addEventListener('click', () => {
+  el.promemoria.hidden = true;
+  scrivi(PROMEMORIA_VISTO, '1');
+});
+
+/* --------------------------------------------------- incolla, cerca, mostra */
+
+el.campo.addEventListener('input', () => {
+  const pieno = el.campo.value.trim().length > 0;
+  el.btnPrincipale.querySelector('.etichetta-bottone').textContent = pieno ? 'Trova' : 'Incolla e trova';
+});
+
+/* Un bottone solo: se il campo e' vuoto legge gli appunti, se c'e' gia' un
+   link cerca quello. Due bottoni che fanno la stessa cosa confondono. */
+el.form.addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  if (el.campo.value.trim()) {
+    cerca(el.campo.value.trim());
+    return;
+  }
+  try {
+    const testo = await navigator.clipboard.readText();
+    if (!testo || !testo.trim()) {
+      toast('Negli appunti non c’è niente.', 'no');
+      el.campo.focus();
+      return;
+    }
+    el.campo.value = testo.trim();
+    cerca(testo.trim());
+  } catch (_) {
+    /* iOS chiede il permesso e si puo' dire di no: resta l'incolla a mano. */
+    el.campo.focus();
+    toast('Tieni premuto nel campo e scegli «Incolla».');
+  }
+});
+
+async function cerca(testo) {
+  el.btnPrincipale.disabled = true;
+  el.risultati.innerHTML = '';
+  memoria.clear();
+  mostraStato('Sto cercando…', 'lavorando', true);
+  try {
+    const dati = await chiama('/api/resolve', { method: 'POST', body: JSON.stringify({ url: testo }) });
     const elementi = dati.elementi || [];
     if (!elementi.length) {
-      mostraStato('Non ho trovato nulla di scaricabile.', 'guaio');
+      mostraStato('Non ho trovato niente da scaricare.', 'guaio');
       return;
     }
     nascondiStato();
     elementi.forEach((elemento) => el.risultati.appendChild(creaScheda(elemento)));
     if (elementi.length > 1) {
-      mostraStato('Questo post contiene ' + elementi.length + ' elementi: scaricali uno per uno.', 'fatto');
+      mostraStato('Questo post ha ' + elementi.length + ' elementi.', 'fatto');
     }
+    el.risultati.firstElementChild.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (errore) {
-    mostraStato(errore.message, 'guaio');
+    mostraStato(errore.message, errore.stato === 403 ? 'attenzione' : 'guaio');
   } finally {
-    el.btnTrova.disabled = false;
+    el.btnPrincipale.disabled = false;
   }
-});
+}
 
 function creaScheda(elemento) {
   const scheda = document.createElement('article');
   scheda.className = 'risultato';
 
+  const cornice = document.createElement('div');
+  cornice.className = 'cornice';
+
   const anteprima = document.createElement('img');
-  anteprima.className = 'anteprima';
   anteprima.alt = '';
-  anteprima.loading = 'lazy';
   anteprima.decoding = 'async';
   if (elemento.url_thumb) anteprima.src = elemento.url_thumb;
-  scheda.appendChild(anteprima);
+  cornice.appendChild(anteprima);
 
-  const colonna = document.createElement('div');
+  const sfumatura = document.createElement('div');
+  sfumatura.className = 'sfumatura';
+  cornice.appendChild(sfumatura);
 
+  const bollo = document.createElement('span');
+  bollo.className = 'bollo';
+  bollo.textContent = (elemento.source === 'pinterest' ? 'Pinterest' : 'Instagram') +
+    ' · ' + (elemento.kind === 'video' ? 'video' : 'foto');
+  cornice.appendChild(bollo);
+
+  const didascalia = document.createElement('div');
+  didascalia.className = 'didascalia';
   const titolo = document.createElement('h3');
-  titolo.textContent = elemento.title || 'senza titolo';
-  colonna.appendChild(titolo);
+  titolo.textContent = elemento.title || 'Senza titolo';
+  didascalia.appendChild(titolo);
 
-  const pezzi = [elemento.source === 'pinterest' ? 'Pinterest' : 'Instagram', elemento.kind];
-  const durata = durataLeggibile(elemento.duration);
-  if (durata) pezzi.push(durata);
-  const peso = pesoLeggibile(elemento.filesize);
-  if (peso) pezzi.push(peso);
+  const pezzi = [];
+  const d = durata(elemento.duration);
+  if (d) pezzi.push(d);
+  const p = peso(elemento.filesize);
+  if (p) pezzi.push(p);
   if (elemento.height) pezzi.push(elemento.height + 'p');
-  if (elemento.merge) pezzi.push('da ricomporre');
-  const meta = document.createElement('p');
-  meta.className = 'meta';
-  meta.innerHTML = pezzi.map((p) => '<span>' + p + '</span>').join('<span class="pallino">•</span>');
-  colonna.appendChild(meta);
+  if (elemento.merge) pezzi.push('da comporre');
+  if (pezzi.length) {
+    const meta = document.createElement('p');
+    meta.className = 'meta';
+    pezzi.forEach((valore, indice) => {
+      if (indice) {
+        const punto = document.createElement('span');
+        punto.className = 'punto';
+        punto.textContent = '\u00b7';
+        meta.appendChild(punto);
+      }
+      const pezzo = document.createElement('span');
+      pezzo.textContent = valore;
+      meta.appendChild(pezzo);
+    });
+    didascalia.appendChild(meta);
+  }
+  cornice.appendChild(didascalia);
+  scheda.appendChild(cornice);
 
   const azioni = document.createElement('div');
   azioni.className = 'azioni';
 
-  const scarica = document.createElement('button');
-  scarica.className = 'bottone primario';
-  scarica.type = 'button';
-  scarica.textContent = 'Scarica';
-  scarica.addEventListener('click', () => avviaDownload(elemento, scarica));
-  azioni.appendChild(scarica);
+  const salva = document.createElement('button');
+  salva.className = 'bottone primario grande';
+  salva.type = 'button';
+  const riempimento = document.createElement('span');
+  riempimento.className = 'riempimento';
+  const etichetta = document.createElement('span');
+  etichetta.className = 'etichetta-bottone';
+  etichetta.textContent = 'Salva in galleria';
+  salva.appendChild(riempimento);
+  salva.appendChild(etichetta);
+  salva.addEventListener('click', () => salvaInGalleria(elemento, salva));
+  azioni.appendChild(salva);
 
-  const inSafari = document.createElement('a');
-  inSafari.className = 'bottone secondario';
-  inSafari.href = elemento.url_file;
-  inSafari.target = '_blank';
-  inSafari.rel = 'noopener';
-  inSafari.textContent = 'Apri in Safari';
-  azioni.appendChild(inSafari);
+  const neiFile = document.createElement('a');
+  neiFile.className = 'bottone secondario';
+  neiFile.href = elemento.url_file;
+  neiFile.setAttribute('download', elemento.filename || '');
+  neiFile.textContent = 'Salva nei File';
+  neiFile.addEventListener('click', () => toast('Lo trovi nei Download di Safari.'));
+  azioni.appendChild(neiFile);
 
-  colonna.appendChild(azioni);
-  scheda.appendChild(colonna);
+  scheda.appendChild(azioni);
   return scheda;
 }
 
-function avviaDownload(elemento, bottone) {
-  /* L'ancora con l'attributo download e' il solo modo in cui iOS mostra la
-     richiesta «Scarica» e mette il file nella cartella scelta in Impostazioni.
-     Il link e' della stessa origine, quindi l'attributo viene rispettato. */
+/* ------------------------------------------------- salvataggio in galleria */
+
+const memoria = new Map(); // id -> File gia' scaricato
+
+function testo(bottone, valore) {
+  bottone.querySelector('.etichetta-bottone').textContent = valore;
+}
+function avanzamento(bottone, frazione) {
+  bottone.querySelector('.riempimento').style.width = Math.round(frazione * 100) + '%';
+}
+
+async function scaricaInMemoria(elemento, bottone) {
+  const risposta = await fetch(elemento.url_file + '&apri=1', {
+    headers: chiave ? { 'X-Chiave': chiave } : {},
+  });
+  if (!risposta.ok) {
+    let dettaglio = 'Errore ' + risposta.status + '.';
+    try { dettaglio = (await risposta.json()).detail || dettaglio; } catch (_) {}
+    throw new Error(dettaglio);
+  }
+
+  const totale = Number(risposta.headers.get('content-length')) || 0;
+  if (totale > LIMITE_MEMORIA) throw new Error('Questo file e’ troppo grande per la galleria: usa «Salva nei File».');
+
+  let blob;
+  if (risposta.body && risposta.body.getReader) {
+    const lettore = risposta.body.getReader();
+    const pezzi = [];
+    let presi = 0;
+    for (;;) {
+      const { done, value } = await lettore.read();
+      if (done) break;
+      pezzi.push(value);
+      presi += value.length;
+      if (totale) avanzamento(bottone, presi / totale);
+      testo(bottone, totale ? 'Scarico ' + Math.round((presi / totale) * 100) + '%' : 'Scarico…');
+    }
+    blob = new Blob(pezzi, { type: elemento.mime });
+  } else {
+    blob = await risposta.blob();
+  }
+  avanzamento(bottone, 1);
+  return new File([blob], elemento.filename, { type: elemento.mime });
+}
+
+function scaricaNeiFile(elemento) {
   const ancora = document.createElement('a');
   ancora.href = elemento.url_file;
   ancora.download = elemento.filename || '';
-  ancora.rel = 'noopener';
   document.body.appendChild(ancora);
   ancora.click();
   ancora.remove();
-
-  bottone.textContent = elemento.merge ? 'Sto componendo…' : 'Avviato';
-  setTimeout(() => {
-    bottone.textContent = 'Scarica di nuovo';
-  }, 4000);
-
-  mostraStato(
-    elemento.merge
-      ? 'Il server sta unendo audio e video: può richiedere qualche secondo prima che il download parta.'
-      : 'Download avviato. Il file va nella cartella impostata in Safari › Download.',
-    'fatto'
-  );
-  registraNelloStorico(elemento);
 }
 
-/* ----------------------------------------------------------------- storico */
+async function salvaInGalleria(elemento, bottone) {
+  if (bottone.dataset.occupato === '1') return;
+  bottone.dataset.occupato = '1';
+  const etichettaIniziale = bottone.querySelector('.etichetta-bottone').textContent;
+  try {
+    let file = memoria.get(elemento.id);
+    if (!file) {
+      testo(bottone, 'Preparo…');
+      file = await scaricaInMemoria(elemento, bottone);
+      memoria.set(elemento.id, file);
+    }
 
-function registraNelloStorico(elemento) {
-  const voci = leggi(CHIAVE_STORICO, []) || [];
-  voci.unshift({ nome: elemento.filename, quando: Date.now(), fonte: elemento.source });
-  scrivi(CHIAVE_STORICO, voci.slice(0, MAX_STORICO));
-  disegnaStorico();
+    if (!(navigator.canShare && navigator.canShare({ files: [file] }))) {
+      /* Browser senza condivisione di file (o desktop): meglio il download
+         normale che un messaggio di errore. */
+      scaricaNeiFile(elemento);
+      testo(bottone, 'Scaricato');
+      toast('Questo browser non sa passare i file alla galleria: l’ho scaricato.', '');
+      return;
+    }
+
+    testo(bottone, 'Apro…');
+    await navigator.share({ files: [file] });
+    bottone.classList.remove('pronto');
+    testo(bottone, 'Salvato');
+    avanzamento(bottone, 0);
+    toast(elemento.kind === 'video' ? 'Scegli «Salva video»' : 'Scegli «Salva immagine»', 'ok');
+  } catch (errore) {
+    avanzamento(bottone, 0);
+    if (errore.name === 'AbortError') {
+      testo(bottone, etichettaIniziale);
+      return;
+    }
+    if (errore.name === 'NotAllowedError') {
+      /* iOS pretende che il foglio parta da un tocco: dopo un download lungo
+         l'autorizzazione scade. Il file pero' e' gia' in memoria, quindi il
+         prossimo tocco lo apre all'istante. */
+      bottone.classList.add('pronto');
+      testo(bottone, 'Tocca per salvare');
+      return;
+    }
+    testo(bottone, 'Riprova');
+    toast(errore.message, 'no');
+  } finally {
+    bottone.dataset.occupato = '0';
+  }
 }
 
-function disegnaStorico() {
-  const voci = leggi(CHIAVE_STORICO, []) || [];
-  el.sezioneStorico.hidden = voci.length === 0;
-  el.storico.innerHTML = '';
-  voci.forEach((voce) => {
-    const riga = document.createElement('li');
-    const nome = document.createElement('span');
-    nome.textContent = voce.nome;
-    const quando = document.createElement('span');
-    quando.className = 'quando';
-    quando.textContent = new Date(voce.quando).toLocaleDateString('it-IT', {
-      day: '2-digit',
-      month: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    riga.appendChild(nome);
-    riga.appendChild(quando);
-    el.storico.appendChild(riga);
-  });
-}
-
-el.btnPulisciStorico.addEventListener('click', () => {
-  cancella(CHIAVE_STORICO);
-  disegnaStorico();
-});
-
-/* ------------------------------------- link passato nell'indirizzo (?u=…) */
+/* ------------------------------------------ link passato nell'indirizzo */
 
 function prendiLinkDallaUrl() {
-  const parametri = new URLSearchParams(location.search);
-  const link = parametri.get('u');
+  const link = new URLSearchParams(location.search).get('u');
   if (!link) return;
-  el.campoLink.value = link;
-  /* Pulisco l'indirizzo: se l'utente ricarica non rifa' la stessa ricerca. */
-  history.replaceState(null, '', location.pathname);
-  el.formLink.requestSubmit();
+  el.campo.value = link;
+  /* Tolgo solo "u" e tengo "k": senza la chiave il prossimo avvio non entra. */
+  const parametri = new URLSearchParams(location.search);
+  parametri.delete('u');
+  const coda = parametri.toString();
+  history.replaceState(null, '', location.pathname + (coda ? '?' + coda : ''));
+  cerca(link);
 }
 
-/* ------------------------------------------------------------------- avvio */
+/* ------------------------------------------------------------------ avvio */
 
-if (token) {
-  mostraApp();
-} else {
-  mostraLogin();
-}
+avvia();
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {
-      /* senza service worker il sito funziona, perde solo l'avvio offline */
-    });
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
   });
 }

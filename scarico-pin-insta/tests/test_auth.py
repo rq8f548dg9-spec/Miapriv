@@ -1,56 +1,48 @@
-import time
-
-from server.auth import check_password, make_token, read_token, shortcut_token
+from server.auth import check_key, make_token, read_token
 
 SEGRETO = "segreto-di-prova"
 
 
 def test_token_valido_torna_i_claim():
-    token = make_token(SEGRETO, "sess", 60, chi="io")
-    claims = read_token(SEGRETO, token, "sess")
-    assert claims and claims["chi"] == "io"
+    token = make_token(SEGRETO, "file", 60, jid="abc")
+    claims = read_token(SEGRETO, token, "file")
+    assert claims and claims["jid"] == "abc"
 
 
 def test_token_di_un_altro_pubblico_non_vale():
-    token = make_token(SEGRETO, "sess", 60)
+    token = make_token(SEGRETO, "thumb", 60, jid="abc")
     assert read_token(SEGRETO, token, "file") is None
 
 
 def test_token_con_chiave_diversa_non_vale():
-    token = make_token(SEGRETO, "sess", 60)
-    assert read_token("altro-segreto", token, "sess") is None
+    token = make_token(SEGRETO, "file", 60)
+    assert read_token("altro-segreto", token, "file") is None
 
 
 def test_token_manomesso_non_vale():
     token = make_token(SEGRETO, "file", 60, jid="aaa")
-    corpo, firma = token.split(".")
-    falso = make_token(SEGRETO, "file", 60, jid="bbb").split(".")[0] + "." + firma
-    assert read_token(SEGRETO, falso, "file") is None
+    firma = token.split(".")[1]
+    altro_corpo = make_token(SEGRETO, "file", 60, jid="bbb").split(".")[0]
+    assert read_token(SEGRETO, altro_corpo + "." + firma, "file") is None
 
 
 def test_token_scaduto_non_vale():
-    token = make_token(SEGRETO, "sess", -1)
-    assert read_token(SEGRETO, token, "sess") is None
+    assert read_token(SEGRETO, make_token(SEGRETO, "file", -1), "file") is None
 
 
 def test_token_senza_scadenza_resta_valido():
-    token = shortcut_token(SEGRETO)
+    token = make_token(SEGRETO, "short", None, v=1)
     claims = read_token(SEGRETO, token, "short")
     assert claims is not None and "exp" not in claims
 
 
 def test_token_spazzatura_non_rompe():
     for spazzatura in ["", "abc", "a.b.c", "....", "x." + "y" * 50]:
-        assert read_token(SEGRETO, spazzatura, "sess") is None
+        assert read_token(SEGRETO, spazzatura, "file") is None
 
 
-def test_confronto_password():
-    assert check_password("abc", "abc")
-    assert not check_password("abc", "abd")
-    assert not check_password("abc", "")
-    assert not check_password("abc", None)
-
-
-def test_il_token_scorciatoia_e_stabile():
-    assert shortcut_token(SEGRETO) == shortcut_token(SEGRETO)
-    assert shortcut_token(SEGRETO) != shortcut_token("altro")
+def test_confronto_chiave():
+    assert check_key("abc", "abc")
+    assert not check_key("abc", "abd")
+    assert not check_key("abc", "")
+    assert not check_key("abc", None)

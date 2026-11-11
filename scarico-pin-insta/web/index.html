@@ -4,109 +4,101 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
-<title>Scarico Pin e Insta</title>
+<title>Scarico</title>
 
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Scarico">
-<meta name="theme-color" content="#14121a">
-<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0c0a12" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f7f4fb" media="(prefers-color-scheme: light)">
+<link id="manifesto" rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/icon-180.png">
 <link rel="icon" href="/icons/icon-192.png" sizes="192x192" type="image/png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
-<!-- ------------------------------------------------------------------ login -->
-<main id="vista-login" class="vista" hidden>
-  <div class="scatola-login">
-    <div class="marchio" aria-hidden="true">
-      <img src="/icons/icon-192.png" alt="" width="64" height="64">
-    </div>
-    <h1>Scarico Pin e Insta</h1>
-    <p class="sottotitolo">Sito privato. Serve la password.</p>
-    <form id="form-login" autocomplete="on">
-      <label class="etichetta" for="password">Password</label>
-      <input id="password" name="password" type="password" inputmode="text"
-             autocomplete="current-password" required placeholder="••••••••••">
-      <button id="btn-login" class="bottone primario" type="submit">Entra</button>
-      <p id="errore-login" class="errore" role="alert" hidden></p>
-    </form>
+<div class="aurora" aria-hidden="true"><span class="blob blob-a"></span><span class="blob blob-b"></span></div>
+
+<header class="testata">
+  <div class="logo">
+    <img src="/icons/icon-192.png" alt="" width="28" height="28">
+    <span>Scarico</span>
   </div>
-</main>
+  <span id="spia" class="spia" hidden></span>
+</header>
 
-<!-- -------------------------------------------------------------------- app -->
-<div id="vista-app" class="vista" hidden>
-  <header class="testata">
-    <h1>Scarico Pin e Insta</h1>
-    <button id="btn-esci" class="bottone fantasma piccolo" type="button">Esci</button>
-  </header>
+<main class="foglio">
 
-  <main class="contenuto">
-    <section class="scheda" aria-labelledby="titolo-incolla">
-      <h2 id="titolo-incolla" class="titolo-sezione">Link del pin, del reel o del post</h2>
+  <!-- ------------------------------------------------ serve il link completo -->
+  <section id="vista-chiave" class="scheda avviso" hidden>
+    <h1 class="titolo-avviso">Serve il tuo link personale</h1>
+    <p>
+      Questo indirizzo non ha la chiave. Apri il link completo, quello che finisce
+      con <code>?k=…</code>, e da lì premi <strong>Condividi → Aggiungi a Home</strong>:
+      l'icona se la ricorda per sempre.
+    </p>
+  </section>
+
+  <!-- ----------------------------------------------------------- schermata -->
+  <div id="vista-app" hidden>
+
+    <section class="eroe">
+      <h1>Incolla il link.<br><em>Finisce in galleria.</em></h1>
+      <p class="occhiello">Pinterest e Instagram · video, reel, storie e foto</p>
+    </section>
+
+    <section class="scheda incolla">
       <form id="form-link">
-        <textarea id="campo-link" rows="2" inputmode="url" autocapitalize="off"
-                  autocorrect="off" spellcheck="false"
-                  placeholder="https://www.pinterest.it/pin/… oppure https://www.instagram.com/reel/…"></textarea>
-        <div class="riga-bottoni">
-          <button id="btn-incolla" class="bottone secondario" type="button">Incolla</button>
-          <button id="btn-trova" class="bottone primario" type="submit">Trova il video</button>
-        </div>
+        <textarea id="campo-link" rows="2" inputmode="url" enterkeyhint="search"
+                  autocapitalize="off" autocorrect="off" spellcheck="false"
+                  placeholder="Incolla qui il link del post"></textarea>
+        <button id="btn-principale" class="bottone primario grande" type="submit">
+          <span class="etichetta-bottone">Incolla e trova</span>
+        </button>
       </form>
       <p id="stato" class="stato" role="status" aria-live="polite" hidden></p>
     </section>
 
-    <section id="risultati" class="risultati" aria-label="Risultati"></section>
+    <section id="risultati" class="risultati" aria-label="Trovati"></section>
 
-    <section class="scheda richiudibile">
-      <details id="dettagli-ios">
-        <summary>
-          <span>Come farlo salvare in «scarico pin e insta»</span>
-        </summary>
-        <div class="corpo-dettagli">
-          <ol class="passi">
-            <li>Apri <strong>File</strong> sull'iPhone e crea la cartella
-              <strong>scarico pin e insta</strong> (dentro «Su iPhone» o «iCloud Drive»).</li>
-            <li>Vai in <strong>Impostazioni › App › Safari › Download</strong>,
-              scegli <strong>Altro…</strong> e seleziona quella cartella.</li>
-            <li>Da qui in avanti ogni file che scarichi con questo sito finisce lì dentro.</li>
-            <li>Per avere l'icona sulla schermata Home: apri questo sito in Safari,
-              premi <strong>Condividi</strong> e poi <strong>Aggiungi a Home</strong>.</li>
-          </ol>
-          <p class="nota">
-            Se il download non parte quando apri il sito dall'icona della schermata Home,
-            usa il bottone <strong>Apri in Safari</strong>: iOS consente il download
-            solo dentro Safari in alcune versioni.
-          </p>
-          <div class="blocco-token">
-            <span class="etichetta">Token per l'app Scorciatoie</span>
-            <code id="token-scorciatoia">—</code>
-            <button id="btn-copia-token" class="bottone secondario piccolo" type="button">Copia</button>
-            <p class="nota">
-              Serve solo se vuoi salvare dal foglio di condivisione invece che da Safari.
-              La ricetta della scorciatoia è nel README, sezione «Scorciatoia iOS».
-            </p>
-          </div>
-        </div>
-      </details>
+    <section id="guida" class="scheda guida" hidden>
+      <h2>Come funziona</h2>
+      <ol class="passi">
+        <li>
+          <span class="numero">1</span>
+          <span>Copia il link del post da Pinterest o Instagram.</span>
+        </li>
+        <li>
+          <span class="numero">2</span>
+          <span>Torna qui e tocca <strong>Incolla e trova</strong>.</span>
+        </li>
+        <li>
+          <span class="numero">3</span>
+          <span>Tocca <strong>Salva in galleria</strong>, poi <strong>Salva video</strong>
+                nel foglio che si apre.</span>
+        </li>
+      </ol>
+      <button id="btn-chiudi-guida" class="bottone fantasma piccolo" type="button">Ho capito</button>
     </section>
 
-    <section id="sezione-storico" class="scheda richiudibile" hidden>
-      <details>
-        <summary><span>Ultimi scaricati</span></summary>
-        <div class="corpo-dettagli">
-          <ul id="storico" class="storico"></ul>
-          <button id="btn-pulisci-storico" class="bottone fantasma piccolo" type="button">Svuota l'elenco</button>
-        </div>
-      </details>
+    <section id="aggiungi-home" class="scheda promemoria" hidden>
+      <p><strong>Mettilo sulla schermata Home.</strong> Premi
+         <svg class="glifo-condividi" viewBox="0 0 24 24" aria-hidden="true" width="17" height="17">
+           <path d="M12 3v12M12 3l-3.2 3.2M12 3l3.2 3.2" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+           <path d="M6 11H4.6v8.4h14.8V11H18" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+         </svg>
+         <strong>Condividi</strong> in Safari, poi <strong>Aggiungi a Home</strong>. Si apre come un'app.</p>
+      <button id="btn-chiudi-promemoria" class="bottone fantasma piccolo" type="button">Chiudi</button>
     </section>
 
-    <footer class="piede">
-      <span id="info-server">—</span>
-    </footer>
-  </main>
-</div>
+    <footer class="piede"><span id="info-server"></span></footer>
+  </div>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <script src="/app.js"></script>
 </body>

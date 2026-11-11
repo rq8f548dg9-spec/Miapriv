@@ -3,12 +3,11 @@
    pesanti e i biglietti di download scadono. */
 'use strict';
 
-const CACHE = 'scarico-pin-insta-v1';
+const CACHE = 'scarico-v2';
 const GUSCIO = [
   '/',
   '/style.css',
   '/app.js',
-  '/manifest.webmanifest',
   '/icons/icon-180.png',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
@@ -36,6 +35,8 @@ self.addEventListener('fetch', (evento) => {
   // Fuori dal nostro sito, non GET, o rotte dinamiche: lascio passare.
   if (richiesta.method !== 'GET' || url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/')) return;
+  // Il manifest cambia con la chiave: in cache diventerebbe quello sbagliato.
+  if (url.pathname === '/manifest.webmanifest') return;
 
   // Navigazione: prima la rete, la cache solo se la rete non c'e'.
   if (richiesta.mode === 'navigate') {

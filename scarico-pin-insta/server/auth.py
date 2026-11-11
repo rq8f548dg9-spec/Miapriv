@@ -3,11 +3,11 @@
 Due tipi di token, distinti dal campo "aud" perche' un token di sessione non
 deve poter essere usato come biglietto di download e viceversa:
 
-- "sess"  : sessione del browser, dura SESSION_DAYS giorni, viaggia nell'header.
-- "file"  : biglietto per un singolo download, dura pochi minuti, viaggia nella
-            query string (serve perche' su iOS il download parte da una
-            navigazione, e una navigazione non puo' portare header custom).
-- "short" : token lungo per le Scorciatoie iOS, senza scadenza.
+- "file"  : biglietto per un singolo download, viaggia nella query string
+            (serve perche' su iOS il download puo' partire da una navigazione,
+            e una navigazione non puo' portare intestazioni su misura).
+- "thumb" : biglietto per la miniatura.
+- "short" : token per le Scorciatoie iOS, senza scadenza.
 """
 
 from __future__ import annotations
@@ -65,8 +65,8 @@ def read_token(secret: str, token: str, aud: str) -> dict[str, object] | None:
     return payload
 
 
-def check_password(expected: str, given: str) -> bool:
-    """Confronto a tempo costante, cosi' la password non si indovina a tentativi misurati."""
+def check_key(expected: str, given: str | None) -> bool:
+    """Confronto a tempo costante: la chiave non si indovina a tentativi misurati."""
     return hmac.compare_digest(expected.encode("utf-8"), (given or "").encode("utf-8"))
 
 

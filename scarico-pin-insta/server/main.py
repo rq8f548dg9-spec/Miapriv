@@ -1,4 +1,9 @@
-"""Applicazione FastAPI: serve il sito e risolve i link."""
+"""Applicazione FastAPI: serve il sito e risolve i link.
+
+Non c'e' nessuna password da digitare. Il permesso sta dentro il link che ti
+salvi sulla schermata Home (`?k=...`): chi non ha quel link non entra, tu non
+devi ricordare niente.
+"""
 
 from __future__ import annotations
 
@@ -12,12 +17,12 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
 from . import __version__
-from .auth import check_password, make_token, read_token, shortcut_token
+from .auth import check_key, make_token, read_token
 from .config import Settings, load_settings
 from .extractor import (
     Item,
@@ -41,78 +46,91 @@ log = logging.getLogger("scarico")
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
-FILE_TICKET_TTL = 6 * 3600  # un biglietto di download vale sei ore
-THUMB_TICKET_TTL = 6 * 3600
+# Il sito puo' girare in due modi: dal progetto, leggendo la cartella web/,
+# oppure come file unico (vedi tools/build_hf.py), dove le pagine sono stringhe
+# dentro al programma e le icone vengono disegnate all'avvio.
+RISORSE_WEB: dict[str, str] = {}
+GENERATORE_ICONE = None
+
+
+def _pagina(nome: str, media_type: str) -> Response:
+    contenuto = RISORSE_WEB.get(nome)
+    if contenuto is not None:
+        return Response(contenuto, media_type=media_type, headers=_NO_STORE)
+    return FileResponse(WEB_DIR / nome, media_type=media_type, headers=_NO_STORE)
+
+TICKET_TTL = 6 * 3600  # un biglietto vale sei ore
 MAX_THUMB_BYTES = 8 * 1024 * 1024
 
 settings: Settings = load_settings()
-jobs: TTLStore[Item] = TTLStore(ttl_seconds=FILE_TICKET_TTL)
+jobs: TTLStore[Item] = TTLStore(ttl_seconds=TICKET_TTL)
 extract_semaphore = asyncio.Semaphore(settings.max_concurrent)
 merge_semaphore = asyncio.Semaphore(1)
 
 app = FastAPI(title="Scarico Pin e Insta", version=__version__, docs_url=None, redoc_url=None)
 
 
-# --------------------------------------------------------------------------- #
-# Avvio
-# --------------------------------------------------------------------------- #
-
-
 @app.on_event("startup")
 async def _startup() -> None:
-    if settings.tmp_dir.exists():
-        shutil.rmtree(settings.tmp_dir, ignore_errors=True)
+    shutil.rmtree(settings.tmp_dir, ignore_errors=True)
     settings.tmp_dir.mkdir(parents=True, exist_ok=True)
     log.info("Scarico Pin e Insta %s pronto", __version__)
     log.info("ffmpeg: %s", ffmpeg_version() or "NON trovato (i video da ricomporre falliranno)")
-    log.info("cookie Instagram: %s", settings.cookies_file or "nessuno (i post privati non funzioneranno)")
-    if settings.secret_is_ephemeral:
-        log.warning("SECRET_KEY temporanea: imposta SECRET_KEY nel file .env per non rifare il login a ogni riavvio")
+    log.info("cookie Instagram: %s", "si" if settings.cookies_file else "no (molti post falliranno)")
+    if settings.open_mode:
+        log.warning("OPEN_MODE attivo: il sito e' aperto a chiunque conosca l'indirizzo")
 
 
 # --------------------------------------------------------------------------- #
-# Autenticazione
+# Chiave d'accesso
 # --------------------------------------------------------------------------- #
 
-_failed_logins: dict[str, list[float]] = {}
-_LOGIN_WINDOW = 900.0
-_LOGIN_MAX_TRIES = 8
+_tentativi: dict[str, list[float]] = {}
+_FINESTRA = 900.0
+_MAX_TENTATIVI = 20
 
 
-def _client_key(request: Request) -> str:
+def _chi(request: Request) -> str:
+    inoltrato = request.headers.get("x-forwarded-for", "")
+    if inoltrato:
+        return inoltrato.split(",")[0].strip()
     return request.client.host if request.client else "sconosciuto"
 
 
-def _login_blocked(key: str) -> bool:
-    now = time.monotonic()
-    tries = [t for t in _failed_logins.get(key, []) if now - t < _LOGIN_WINDOW]
-    _failed_logins[key] = tries
-    return len(tries) >= _LOGIN_MAX_TRIES
+def _troppi_tentativi(chiave: str) -> bool:
+    ora = time.monotonic()
+    recenti = [t for t in _tentativi.get(chiave, []) if ora - t < _FINESTRA]
+    _tentativi[chiave] = recenti
+    return len(recenti) >= _MAX_TENTATIVI
 
 
-def _record_failure(key: str) -> None:
-    _failed_logins.setdefault(key, []).append(time.monotonic())
-
-
-async def require_session(
-    authorization: str | None = Header(default=None),
-    x_token: str | None = Header(default=None),
-) -> dict[str, object]:
-    token = x_token or ""
-    if not token and authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-    claims = read_token(settings.secret_key, token, "sess")
-    if claims is None:
-        raise HTTPException(status_code=401, detail="Sessione scaduta: rifai il login.")
-    return claims
+async def require_key(
+    request: Request,
+    k: str | None = Query(default=None, description="chiave d'accesso"),
+    x_chiave: str | None = Header(default=None),
+) -> None:
+    """Il permesso arriva dal link (`?k=`) o dall'intestazione X-Chiave."""
+    if settings.open_mode:
+        return
+    fornita = x_chiave or k
+    if check_key(settings.access_key, fornita):
+        _tentativi.pop(_chi(request), None)
+        return
+    chi = _chi(request)
+    if _troppi_tentativi(chi):
+        raise HTTPException(status_code=429, detail="Troppi tentativi. Riprova tra un quarto d'ora.")
+    _tentativi.setdefault(chi, []).append(time.monotonic())
+    log.warning("chiave mancante o sbagliata da %s", chi)
+    raise HTTPException(
+        status_code=401,
+        detail="Questo indirizzo non e' completo. Apri il tuo link personale, quello che finisce con ?k=...",
+    )
 
 
 def _base_url(request: Request) -> str:
     proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
     host = (
-        request.headers.get("x-forwarded-host")
-        or request.headers.get("host")
-        or request.url.netloc
+        request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
     ).split(",")[0].strip()
     return f"{proto}://{host}"
 
@@ -125,20 +143,60 @@ _NO_STORE = {"Cache-Control": "no-store, max-age=0"}
 
 
 @app.get("/", include_in_schema=False)
-async def index() -> FileResponse:
-    return FileResponse(WEB_DIR / "index.html", headers=_NO_STORE)
+async def index() -> Response:
+    # La pagina si apre sempre: e' il JavaScript a dire "serve il link completo"
+    # se la chiave non c'e'. Una pagina di errore secca spaventerebbe e basta.
+    return _pagina("index.html", "text/html; charset=utf-8")
+
+
+@app.get("/style.css", include_in_schema=False)
+async def foglio_di_stile() -> Response:
+    return _pagina("style.css", "text/css; charset=utf-8")
+
+
+@app.get("/app.js", include_in_schema=False)
+async def programma() -> Response:
+    return _pagina("app.js", "application/javascript; charset=utf-8")
 
 
 @app.get("/sw.js", include_in_schema=False)
-async def service_worker() -> FileResponse:
-    # Il service worker deve stare alla radice per avere come scope tutto il sito,
-    # e non va mai messo in cache, altrimenti gli aggiornamenti non arrivano.
-    return FileResponse(WEB_DIR / "sw.js", media_type="application/javascript", headers=_NO_STORE)
+async def service_worker() -> Response:
+    return _pagina("sw.js", "application/javascript; charset=utf-8")
 
 
 @app.get("/manifest.webmanifest", include_in_schema=False)
-async def manifest() -> FileResponse:
-    return FileResponse(WEB_DIR / "manifest.webmanifest", media_type="application/manifest+json")
+async def manifest(k: str | None = Query(default=None)) -> JSONResponse:
+    """Il manifest si porta dietro la chiave.
+
+    Quando iOS aggiunge il sito alla schermata Home puo' usare `start_url`:
+    se li' dentro la chiave non ci fosse, l'icona aprirebbe un indirizzo nudo
+    e il sito direbbe "serve il link completo" ogni volta.
+    """
+    start = "/"
+    if k and (settings.open_mode or check_key(settings.access_key, k)):
+        start = f"/?k={quote(k, safe='')}"
+    return JSONResponse(
+        {
+            "name": "Scarico Pin e Insta",
+            "short_name": "Scarico",
+            "description": "Salva in galleria i video e le foto di Pinterest e Instagram.",
+            "lang": "it",
+            "start_url": start,
+            "scope": "/",
+            "display": "standalone",
+            "orientation": "portrait",
+            "background_color": "#0c0a12",
+            "theme_color": "#0c0a12",
+            "icons": [
+                {"src": "/icons/icon-180.png", "sizes": "180x180", "type": "image/png"},
+                {"src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+            ],
+        },
+        media_type="application/manifest+json",
+        headers=_NO_STORE,
+    )
 
 
 @app.get("/api/health", include_in_schema=False)
@@ -151,35 +209,14 @@ async def health() -> dict[str, object]:
 # --------------------------------------------------------------------------- #
 
 
-@app.post("/api/login")
-async def login(request: Request) -> JSONResponse:
-    key = _client_key(request)
-    if _login_blocked(key):
-        raise HTTPException(status_code=429, detail="Troppi tentativi. Riprova tra un quarto d'ora.")
-    try:
-        body = await request.json()
-    except ValueError:
-        body = {}
-    given = str((body or {}).get("password") or "")
-    if not check_password(settings.password, given):
-        _record_failure(key)
-        log.warning("login fallito da %s", key)
-        raise HTTPException(status_code=401, detail="Password sbagliata.")
-    _failed_logins.pop(key, None)
-    token = make_token(settings.secret_key, "sess", settings.session_days * 86400)
-    return JSONResponse({"token": token, "giorni": settings.session_days}, headers=_NO_STORE)
-
-
 @app.get("/api/me")
-async def me(request: Request, _: dict = Depends(require_session)) -> JSONResponse:
+async def me(_: None = Depends(require_key)) -> JSONResponse:
     return JSONResponse(
         {
             "versione": __version__,
             "ffmpeg": have_ffmpeg(),
             "cookie_instagram": bool(settings.cookies_file),
             "limite_mb": settings.max_filesize_mb,
-            "token_scorciatoia": shortcut_token(settings.secret_key),
-            "base": _base_url(request),
         },
         headers=_NO_STORE,
     )
@@ -191,8 +228,8 @@ async def _resolve(raw_url: str) -> list[Item]:
     except UrlNotSupported as exc:
         raise HTTPException(
             status_code=400,
-            detail="Questo link non e' di Pinterest o Instagram. Incolla l'indirizzo di un pin, "
-            "di un reel o di un post.",
+            detail="Questo link non e' di Pinterest o Instagram. Copia l'indirizzo di un pin, "
+            "di un reel, di una storia o di un post.",
         ) from exc
 
     async with extract_semaphore:
@@ -204,8 +241,8 @@ async def _resolve(raw_url: str) -> list[Item]:
             log.info("serve login per %s: %s", url, exc)
             raise HTTPException(
                 status_code=403,
-                detail="Instagram chiede di essere loggati per questo contenuto. Serve il file "
-                "cookies.txt sul server (vedi il README), oppure il post e' privato.",
+                detail="Instagram chiede di essere loggati per questo contenuto. Aggiungi i cookie "
+                "nelle impostazioni del server, oppure il post e' privato.",
             ) from exc
         except TooBig as exc:
             raise HTTPException(
@@ -215,8 +252,7 @@ async def _resolve(raw_url: str) -> list[Item]:
         except NothingToDownload as exc:
             log.info("niente da scaricare in %s: %s", url, exc)
             raise HTTPException(
-                status_code=404,
-                detail="Non ho trovato nessun video o immagine in questo link.",
+                status_code=404, detail="Non ho trovato nessun video o foto in questo link."
             ) from exc
 
     for item in items:
@@ -228,19 +264,18 @@ def _with_tickets(items: list[Item]) -> list[dict[str, object]]:
     out = []
     for item in items:
         data = item.public_dict()
-        data["url_file"] = f"/api/file/{item.jid}?t=" + make_token(
-            settings.secret_key, "file", FILE_TICKET_TTL, jid=item.jid
-        )
+        biglietto = make_token(settings.secret_key, "file", TICKET_TTL, jid=item.jid)
+        data["url_file"] = f"/api/file/{item.jid}?t={biglietto}"
         if item.thumbnail:
             data["url_thumb"] = f"/api/thumb/{item.jid}?t=" + make_token(
-                settings.secret_key, "thumb", THUMB_TICKET_TTL, jid=item.jid
+                settings.secret_key, "thumb", TICKET_TTL, jid=item.jid
             )
         out.append(data)
     return out
 
 
 @app.post("/api/resolve")
-async def resolve(request: Request, _: dict = Depends(require_session)) -> JSONResponse:
+async def resolve(request: Request, _: None = Depends(require_key)) -> JSONResponse:
     try:
         body = await request.json()
     except ValueError:
@@ -256,24 +291,24 @@ async def resolve(request: Request, _: dict = Depends(require_session)) -> JSONR
 @app.get("/api/shortcut")
 async def shortcut(
     request: Request,
-    k: str = Query(..., description="token delle Scorciatoie"),
     u: str = Query(..., description="link di Pinterest o Instagram"),
+    _: None = Depends(require_key),
 ) -> JSONResponse:
-    """Endpoint per l'app Scorciatoie di iOS: un link in ingresso, un file in uscita."""
-    if read_token(settings.secret_key, k, "short") is None:
-        raise HTTPException(status_code=401, detail="Token della scorciatoia non valido.")
+    """Per l'app Comandi rapidi di iOS: un link in ingresso, un file in uscita."""
     items = await _resolve(u)
     base = _base_url(request)
-    enriched = _with_tickets(items)
-    primo = enriched[0]
+    arricchiti = _with_tickets(items)
+    primo = arricchiti[0]
     return JSONResponse(
         {
             "ok": True,
             "download": base + str(primo["url_file"]),
             "nome_file": primo["filename"],
-            "quanti": len(enriched),
+            "tipo": primo["mime"],
+            "quanti": len(arricchiti),
             "tutti": [
-                {"download": base + str(e["url_file"]), "nome_file": e["filename"]} for e in enriched
+                {"download": base + str(e["url_file"]), "nome_file": e["filename"], "tipo": e["mime"]}
+                for e in arricchiti
             ],
         },
         headers=_NO_STORE,
@@ -286,11 +321,7 @@ async def shortcut(
 
 
 def _content_disposition(filename: str) -> str:
-    """Nome del file per il browser, in versione ASCII e in versione UTF-8.
-
-    Senza la variante ASCII i nomi con accenti arrivano storti ai client vecchi;
-    senza filename* iOS taglia gli accenti.
-    """
+    """Nome del file per il browser, in versione ASCII e in versione UTF-8."""
     ascii_name = (
         unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode("ascii").replace('"', "")
     ) or "file"
@@ -300,22 +331,18 @@ def _content_disposition(filename: str) -> str:
 def _ticket_item(jid: str, token: str, aud: str) -> Item:
     claims = read_token(settings.secret_key, token, aud)
     if claims is None or claims.get("jid") != jid:
-        raise HTTPException(status_code=403, detail="Link di download scaduto. Risolvi di nuovo il pin.")
+        raise HTTPException(status_code=403, detail="Questo link di download e' scaduto. Cerca di nuovo il post.")
     item = jobs.get(jid)
     if item is None:
         raise HTTPException(
             status_code=410,
-            detail="Questo download non e' piu' in memoria (il server e' stato riavviato). Incolla di nuovo il link.",
+            detail="Il server si e' riavviato e ha perso questo download. Incolla di nuovo il link.",
         )
     return item
 
 
 async def _proxy(
-    item: Item,
-    request: Request,
-    *,
-    attachment: bool,
-    byte_cap: int | None = None,
+    item: Item, request: Request, *, attachment: bool, byte_cap: int | None = None
 ) -> StreamingResponse:
     direct = item.direct_url
     if not direct:
@@ -346,21 +373,22 @@ async def _proxy(
         log.warning("il CDN ha risposto %s per %s", code, item.jid)
         raise HTTPException(
             status_code=502,
-            detail=f"Il file non e' piu' disponibile (il CDN ha risposto {code}). Riprova a risolvere il link.",
+            detail=f"Il file non e' piu' disponibile (il CDN ha risposto {code}). Cerca di nuovo il post.",
         )
 
     declared = upstream.headers.get("content-length")
-    if byte_cap and declared and declared.isdigit() and int(declared) > byte_cap:
-        await upstream.aclose()
-        await client.aclose()
-        raise HTTPException(status_code=413, detail="File troppo grande.")
-    if settings.max_filesize_bytes and attachment and declared and declared.isdigit():
-        if int(declared) > settings.max_filesize_bytes:
+    misura = int(declared) if declared and declared.isdigit() else None
+    if misura is not None:
+        if byte_cap and misura > byte_cap:
+            await upstream.aclose()
+            await client.aclose()
+            raise HTTPException(status_code=413, detail="File troppo grande.")
+        if attachment and settings.max_filesize_bytes and misura > settings.max_filesize_bytes:
             await upstream.aclose()
             await client.aclose()
             raise HTTPException(
                 status_code=413,
-                detail=f"Il file pesa {int(declared) / 1048576:.0f} MB e supera il limite di {settings.max_filesize_mb} MB.",
+                detail=f"Il file pesa {misura / 1048576:.0f} MB e supera il limite di {settings.max_filesize_mb} MB.",
             )
 
     out_headers = {"Cache-Control": "no-store, max-age=0"}
@@ -389,7 +417,7 @@ async def _proxy(
 
 @app.get("/api/thumb/{jid}")
 async def thumb(jid: str, request: Request, t: str = Query(...)) -> StreamingResponse:
-    """Le miniature passano dal server: il CDN non vede il telefono."""
+    """Le miniature passano dal server: il CDN non vede mai il telefono."""
     item = _ticket_item(jid, t, "thumb")
     stand_in = Item(
         jid=item.jid,
@@ -401,23 +429,28 @@ async def thumb(jid: str, request: Request, t: str = Query(...)) -> StreamingRes
         direct_url=item.thumbnail,
         http_headers=item.http_headers,
     )
-    response = await _proxy(stand_in, request, attachment=False, byte_cap=MAX_THUMB_BYTES)
-    response.headers["Cache-Control"] = "private, max-age=3600"
-    return response
+    risposta = await _proxy(stand_in, request, attachment=False, byte_cap=MAX_THUMB_BYTES)
+    risposta.headers["Cache-Control"] = "private, max-age=3600"
+    return risposta
 
 
 @app.get("/api/file/{jid}")
-async def file(jid: str, request: Request, t: str = Query(...)):
+async def file(jid: str, request: Request, t: str = Query(...), apri: int = Query(0)):
+    """Consegna il file.
+
+    `apri=1` lo manda senza l'intestazione "da salvare": serve quando la pagina
+    lo legge in memoria per passarlo al foglio di condivisione di iOS, o quando
+    lo apre per mostrarlo.
+    """
     item = _ticket_item(jid, t, "file")
 
     if not item.needs_merge:
-        return await _proxy(item, request, attachment=True)
+        return await _proxy(item, request, attachment=not apri)
 
     if not have_ffmpeg():
         raise HTTPException(
             status_code=501,
-            detail="Questo video ha audio e video separati e serve ffmpeg sul server per unirli. "
-            "Installa ffmpeg e riprova.",
+            detail="Questo video ha audio e video separati e serve ffmpeg sul server per unirli.",
         )
 
     async with merge_semaphore:
@@ -427,7 +460,7 @@ async def file(jid: str, request: Request, t: str = Query(...)):
         except NothingToDownload as exc:
             shutil.rmtree(work_dir, ignore_errors=True)
             raise HTTPException(status_code=502, detail=f"Non sono riuscito a comporre il video: {exc}") from exc
-        except Exception as exc:  # noqa: BLE001 - qualunque errore di yt-dlp qui va riportato pulito
+        except Exception as exc:  # noqa: BLE001 - qualunque errore di yt-dlp va riportato pulito
             shutil.rmtree(work_dir, ignore_errors=True)
             log.exception("errore durante la composizione di %s", item.jid)
             raise HTTPException(status_code=502, detail="Non sono riuscito a comporre il video.") from exc
@@ -445,12 +478,23 @@ async def file(jid: str, request: Request, t: str = Query(...)):
             filename = filename.rsplit(".", 1)[0] + path.suffix
         return FileResponse(
             path,
-            filename=filename,
+            filename=None if apri else filename,
             media_type="video/mp4",
             headers={"Cache-Control": "no-store, max-age=0"},
             background=BackgroundTask(shutil.rmtree, work_dir, True),
         )
 
 
-# Gli statici restano per ultimi: cosi' nessun file in web/ puo' coprire le API.
-app.mount("/", StaticFiles(directory=WEB_DIR, html=False), name="web")
+def monta_statici() -> None:
+    """Le icone e gli altri file: da disco se ci sono, altrimenti disegnate."""
+    icone = WEB_DIR / "icons"
+    if not icone.is_dir() and GENERATORE_ICONE is not None:
+        icone = GENERATORE_ICONE()
+    if icone.is_dir():
+        app.mount("/icons", StaticFiles(directory=icone), name="icone")
+    # Per ultimo, cosi' nessun file statico puo' coprire le API.
+    if WEB_DIR.is_dir():
+        app.mount("/", StaticFiles(directory=WEB_DIR, html=False), name="web")
+
+
+monta_statici()
