@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="it">
+<html lang="it" data-base="__BASE__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -11,10 +11,10 @@
 <meta name="apple-mobile-web-app-title" content="Scarico">
 <meta name="theme-color" content="#0c0a12" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f7f4fb" media="(prefers-color-scheme: light)">
-<link id="manifesto" rel="manifest" href="/manifest.webmanifest">
-<link rel="apple-touch-icon" href="/icons/icon-180.png">
-<link rel="icon" href="/icons/icon-192.png" sizes="192x192" type="image/png">
-<link rel="stylesheet" href="/style.css">
+<link id="manifesto" rel="manifest" href="__BASE__/manifest.webmanifest">
+<link rel="apple-touch-icon" href="__BASE__/icons/icon-180.png">
+<link rel="icon" href="__BASE__/icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="stylesheet" href="__BASE__/style.css">
 </head>
 <body>
 
@@ -22,7 +22,7 @@
 
 <header class="testata">
   <div class="logo">
-    <img src="/icons/icon-192.png" alt="" width="28" height="28">
+    <img src="__BASE__/icons/icon-192.png" alt="" width="28" height="28">
     <span>Scarico</span>
   </div>
   <span id="spia" class="spia" hidden></span>
@@ -100,6 +100,6 @@
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="/app.js"></script>
+<script src="__BASE__/app.js"></script>
 </body>
 </html>

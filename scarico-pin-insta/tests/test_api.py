@@ -32,8 +32,15 @@ def test_la_pagina_si_apre_anche_senza_chiave(client):
 
 
 def test_gli_statici_ci_sono(client):
-    for percorso in ("/style.css", "/app.js", "/sw.js", "/icons/icon-180.png"):
+    for percorso in ("/style.css", "/app.js", "/icons/icon-180.png"):
         assert client.get(percorso).status_code == 200, percorso
+
+
+def test_il_prefisso_sparisce_quando_il_sito_sta_alla_radice(client):
+    pagina = client.get("/").text
+    assert "__BASE__" not in pagina
+    assert 'href="/style.css"' in pagina
+    assert 'data-base=""' in pagina
 
 
 def test_senza_chiave_le_api_sono_chiuse(client):

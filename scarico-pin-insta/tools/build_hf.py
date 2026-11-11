@@ -21,7 +21,7 @@ USCITA = RADICE / "hf-space"
 
 # L'ordine conta: ogni modulo puo' usare solo quelli che vengono prima.
 MODULI = ["auth.py", "config.py", "store.py", "urls.py", "extractor.py", "main.py"]
-RISORSE = ["index.html", "style.css", "app.js", "sw.js"]
+RISORSE = ["index.html", "style.css", "app.js"]
 
 INTESTAZIONE = '''#!/usr/bin/env python3
 """Scarico Pin e Insta - tutto in un file solo, per Hugging Face Spaces.

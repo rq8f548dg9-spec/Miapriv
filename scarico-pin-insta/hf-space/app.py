@@ -148,7 +148,7 @@ def _icone_in_tmp() -> Path:
 # --------------------------------------------------------------------------
 _RISORSE: dict[str, str] = {
     'index.html': r"""<!DOCTYPE html>
-<html lang="it">
+<html lang="it" data-base="__BASE__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -160,10 +160,10 @@ _RISORSE: dict[str, str] = {
 <meta name="apple-mobile-web-app-title" content="Scarico">
 <meta name="theme-color" content="#0c0a12" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f7f4fb" media="(prefers-color-scheme: light)">
-<link id="manifesto" rel="manifest" href="/manifest.webmanifest">
-<link rel="apple-touch-icon" href="/icons/icon-180.png">
-<link rel="icon" href="/icons/icon-192.png" sizes="192x192" type="image/png">
-<link rel="stylesheet" href="/style.css">
+<link id="manifesto" rel="manifest" href="__BASE__/manifest.webmanifest">
+<link rel="apple-touch-icon" href="__BASE__/icons/icon-180.png">
+<link rel="icon" href="__BASE__/icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="stylesheet" href="__BASE__/style.css">
 </head>
 <body>
 
@@ -171,7 +171,7 @@ _RISORSE: dict[str, str] = {
 
 <header class="testata">
   <div class="logo">
-    <img src="/icons/icon-192.png" alt="" width="28" height="28">
+    <img src="__BASE__/icons/icon-192.png" alt="" width="28" height="28">
     <span>Scarico</span>
   </div>
   <span id="spia" class="spia" hidden></span>
@@ -249,7 +249,7 @@ _RISORSE: dict[str, str] = {
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="/app.js"></script>
+<script src="__BASE__/app.js"></script>
 </body>
 </html>
 """,
@@ -655,6 +655,11 @@ const GUIDA_VISTA = 'scarico.guida';
 const PROMEMORIA_VISTO = 'scarico.home';
 const LIMITE_MEMORIA = 400 * 1024 * 1024; // oltre, il telefono rischia di non farcela
 
+/* Il sito puo' stare alla radice di un dominio oppure dentro un percorso
+   (su Supabase vive sotto /functions/v1/scarico). Il prefisso lo scrive il
+   server nell'attributo data-base, cosi' il resto del codice non se ne cura. */
+const BASE = document.documentElement.dataset.base || '';
+
 const $ = (sel) => document.querySelector(sel);
 
 const el = {
@@ -708,13 +713,13 @@ const chiave = trovaChiave();
 /* Il manifest deve portarsi dietro la chiave, altrimenti l'icona sulla Home
    rischia di aprire l'indirizzo nudo e di non entrare piu'. */
 if (chiave && el.manifesto) {
-  el.manifesto.href = '/manifest.webmanifest?k=' + encodeURIComponent(chiave);
+  el.manifesto.href = BASE + '/manifest.webmanifest?k=' + encodeURIComponent(chiave);
 }
 
 async function chiama(percorso, opzioni = {}) {
   const intestazioni = Object.assign({ 'Content-Type': 'application/json' }, opzioni.headers || {});
   if (chiave) intestazioni['X-Chiave'] = chiave;
-  const risposta = await fetch(percorso, Object.assign({}, opzioni, { headers: intestazioni }));
+  const risposta = await fetch(BASE + percorso, Object.assign({}, opzioni, { headers: intestazioni }));
   let dati = null;
   try { dati = await risposta.json(); } catch (_) {}
   if (!risposta.ok) {
@@ -877,7 +882,7 @@ function creaScheda(elemento) {
   const anteprima = document.createElement('img');
   anteprima.alt = '';
   anteprima.decoding = 'async';
-  if (elemento.url_thumb) anteprima.src = elemento.url_thumb;
+  if (elemento.url_thumb) anteprima.src = BASE + elemento.url_thumb;
   cornice.appendChild(anteprima);
 
   const sfumatura = document.createElement('div');
@@ -940,7 +945,7 @@ function creaScheda(elemento) {
 
   const neiFile = document.createElement('a');
   neiFile.className = 'bottone secondario';
-  neiFile.href = elemento.url_file;
+  neiFile.href = BASE + elemento.url_file;
   neiFile.setAttribute('download', elemento.filename || '');
   neiFile.textContent = 'Salva nei File';
   neiFile.addEventListener('click', () => toast('Lo trovi nei Download di Safari.'));
@@ -962,7 +967,7 @@ function avanzamento(bottone, frazione) {
 }
 
 async function scaricaInMemoria(elemento, bottone) {
-  const risposta = await fetch(elemento.url_file + '&apri=1', {
+  const risposta = await fetch(BASE + elemento.url_file + '&apri=1', {
     headers: chiave ? { 'X-Chiave': chiave } : {},
   });
   if (!risposta.ok) {
@@ -997,7 +1002,7 @@ async function scaricaInMemoria(elemento, bottone) {
 
 function scaricaNeiFile(elemento) {
   const ancora = document.createElement('a');
-  ancora.href = elemento.url_file;
+  ancora.href = BASE + elemento.url_file;
   ancora.download = elemento.filename || '';
   document.body.appendChild(ancora);
   ancora.click();
@@ -1069,75 +1074,6 @@ function prendiLinkDallaUrl() {
 /* ------------------------------------------------------------------ avvio */
 
 avvia();
-
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
-  });
-}
-""",
-    'sw.js': r"""/* Service worker: tiene in cache solo il guscio del sito.
-   Le API e i file video non vengono MAI messi in cache: sono privati,
-   pesanti e i biglietti di download scadono. */
-'use strict';
-
-const CACHE = 'scarico-v2';
-const GUSCIO = [
-  '/',
-  '/style.css',
-  '/app.js',
-  '/icons/icon-180.png',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png',
-];
-
-self.addEventListener('install', (evento) => {
-  evento.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(GUSCIO)).then(() => self.skipWaiting())
-  );
-});
-
-self.addEventListener('activate', (evento) => {
-  evento.waitUntil(
-    caches
-      .keys()
-      .then((nomi) => Promise.all(nomi.filter((n) => n !== CACHE).map((n) => caches.delete(n))))
-      .then(() => self.clients.claim())
-  );
-});
-
-self.addEventListener('fetch', (evento) => {
-  const richiesta = evento.request;
-  const url = new URL(richiesta.url);
-
-  // Fuori dal nostro sito, non GET, o rotte dinamiche: lascio passare.
-  if (richiesta.method !== 'GET' || url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith('/api/')) return;
-  // Il manifest cambia con la chiave: in cache diventerebbe quello sbagliato.
-  if (url.pathname === '/manifest.webmanifest') return;
-
-  // Navigazione: prima la rete, la cache solo se la rete non c'e'.
-  if (richiesta.mode === 'navigate') {
-    evento.respondWith(fetch(richiesta).catch(() => caches.match('/')));
-    return;
-  }
-
-  // Guscio: prima la cache, e intanto si aggiorna in silenzio.
-  evento.respondWith(
-    caches.match(richiesta).then((salvata) => {
-      const dallaRete = fetch(richiesta)
-        .then((risposta) => {
-          if (risposta && risposta.ok && risposta.type === 'basic') {
-            const copia = risposta.clone();
-            caches.open(CACHE).then((cache) => cache.put(richiesta, copia));
-          }
-          return risposta;
-        })
-        .catch(() => salvata);
-      return salvata || dallaRete;
-    })
-  );
-});
 """,
 }
 
@@ -2019,9 +1955,11 @@ GENERATORE_ICONE = _icone_in_tmp
 
 def _pagina(nome: str, media_type: str) -> Response:
     contenuto = RISORSE_WEB.get(nome)
-    if contenuto is not None:
-        return Response(contenuto, media_type=media_type, headers=_NO_STORE)
-    return FileResponse(WEB_DIR / nome, media_type=media_type, headers=_NO_STORE)
+    if contenuto is None:
+        contenuto = (WEB_DIR / nome).read_text(encoding="utf-8")
+    # Il sito sa stare anche dentro un percorso (su Supabase vive sotto
+    # /functions/v1/scarico): qui sta alla radice, quindi il prefisso e' vuoto.
+    return Response(contenuto.replace("__BASE__", ""), media_type=media_type, headers=_NO_STORE)
 
 TICKET_TTL = 6 * 3600  # un biglietto vale sei ore
 MAX_THUMB_BYTES = 8 * 1024 * 1024
@@ -2121,11 +2059,6 @@ async def foglio_di_stile() -> Response:
 @app.get("/app.js", include_in_schema=False)
 async def programma() -> Response:
     return _pagina("app.js", "application/javascript; charset=utf-8")
-
-
-@app.get("/sw.js", include_in_schema=False)
-async def service_worker() -> Response:
-    return _pagina("sw.js", "application/javascript; charset=utf-8")
 
 
 @app.get("/manifest.webmanifest", include_in_schema=False)

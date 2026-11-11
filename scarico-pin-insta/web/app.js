@@ -12,6 +12,11 @@ const GUIDA_VISTA = 'scarico.guida';
 const PROMEMORIA_VISTO = 'scarico.home';
 const LIMITE_MEMORIA = 400 * 1024 * 1024; // oltre, il telefono rischia di non farcela
 
+/* Il sito puo' stare alla radice di un dominio oppure dentro un percorso
+   (su Supabase vive sotto /functions/v1/scarico). Il prefisso lo scrive il
+   server nell'attributo data-base, cosi' il resto del codice non se ne cura. */
+const BASE = document.documentElement.dataset.base || '';
+
 const $ = (sel) => document.querySelector(sel);
 
 const el = {
@@ -65,13 +70,13 @@ const chiave = trovaChiave();
 /* Il manifest deve portarsi dietro la chiave, altrimenti l'icona sulla Home
    rischia di aprire l'indirizzo nudo e di non entrare piu'. */
 if (chiave && el.manifesto) {
-  el.manifesto.href = '/manifest.webmanifest?k=' + encodeURIComponent(chiave);
+  el.manifesto.href = BASE + '/manifest.webmanifest?k=' + encodeURIComponent(chiave);
 }
 
 async function chiama(percorso, opzioni = {}) {
   const intestazioni = Object.assign({ 'Content-Type': 'application/json' }, opzioni.headers || {});
   if (chiave) intestazioni['X-Chiave'] = chiave;
-  const risposta = await fetch(percorso, Object.assign({}, opzioni, { headers: intestazioni }));
+  const risposta = await fetch(BASE + percorso, Object.assign({}, opzioni, { headers: intestazioni }));
   let dati = null;
   try { dati = await risposta.json(); } catch (_) {}
   if (!risposta.ok) {
@@ -234,7 +239,7 @@ function creaScheda(elemento) {
   const anteprima = document.createElement('img');
   anteprima.alt = '';
   anteprima.decoding = 'async';
-  if (elemento.url_thumb) anteprima.src = elemento.url_thumb;
+  if (elemento.url_thumb) anteprima.src = BASE + elemento.url_thumb;
   cornice.appendChild(anteprima);
 
   const sfumatura = document.createElement('div');
@@ -297,7 +302,7 @@ function creaScheda(elemento) {
 
   const neiFile = document.createElement('a');
   neiFile.className = 'bottone secondario';
-  neiFile.href = elemento.url_file;
+  neiFile.href = BASE + elemento.url_file;
   neiFile.setAttribute('download', elemento.filename || '');
   neiFile.textContent = 'Salva nei File';
   neiFile.addEventListener('click', () => toast('Lo trovi nei Download di Safari.'));
@@ -319,7 +324,7 @@ function avanzamento(bottone, frazione) {
 }
 
 async function scaricaInMemoria(elemento, bottone) {
-  const risposta = await fetch(elemento.url_file + '&apri=1', {
+  const risposta = await fetch(BASE + elemento.url_file + '&apri=1', {
     headers: chiave ? { 'X-Chiave': chiave } : {},
   });
   if (!risposta.ok) {
@@ -354,7 +359,7 @@ async function scaricaInMemoria(elemento, bottone) {
 
 function scaricaNeiFile(elemento) {
   const ancora = document.createElement('a');
-  ancora.href = elemento.url_file;
+  ancora.href = BASE + elemento.url_file;
   ancora.download = elemento.filename || '';
   document.body.appendChild(ancora);
   ancora.click();
@@ -426,9 +431,3 @@ function prendiLinkDallaUrl() {
 /* ------------------------------------------------------------------ avvio */
 
 avvia();
-
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
-  });
-}

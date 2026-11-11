@@ -55,9 +55,11 @@ GENERATORE_ICONE = None
 
 def _pagina(nome: str, media_type: str) -> Response:
     contenuto = RISORSE_WEB.get(nome)
-    if contenuto is not None:
-        return Response(contenuto, media_type=media_type, headers=_NO_STORE)
-    return FileResponse(WEB_DIR / nome, media_type=media_type, headers=_NO_STORE)
+    if contenuto is None:
+        contenuto = (WEB_DIR / nome).read_text(encoding="utf-8")
+    # Il sito sa stare anche dentro un percorso (su Supabase vive sotto
+    # /functions/v1/scarico): qui sta alla radice, quindi il prefisso e' vuoto.
+    return Response(contenuto.replace("__BASE__", ""), media_type=media_type, headers=_NO_STORE)
 
 TICKET_TTL = 6 * 3600  # un biglietto vale sei ore
 MAX_THUMB_BYTES = 8 * 1024 * 1024
@@ -157,11 +159,6 @@ async def foglio_di_stile() -> Response:
 @app.get("/app.js", include_in_schema=False)
 async def programma() -> Response:
     return _pagina("app.js", "application/javascript; charset=utf-8")
-
-
-@app.get("/sw.js", include_in_schema=False)
-async def service_worker() -> Response:
-    return _pagina("sw.js", "application/javascript; charset=utf-8")
 
 
 @app.get("/manifest.webmanifest", include_in_schema=False)
