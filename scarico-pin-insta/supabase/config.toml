@@ -1,0 +1,15 @@
+# Configurazione della funzione per Supabase.
+#
+# Serve per due cose, e senza di essa il deploy automatico non fa nulla:
+#
+# 1. verify_jwt = false. Senza questa riga Supabase pretende un token di
+#    autorizzazione su ogni richiesta, e Safari non potrebbe nemmeno aprire
+#    la pagina. Il sito ha la sua protezione: la chiave dentro il link.
+# 2. La sezione [functions.scarico] e' cio' che dice all'integrazione GitHub
+#    quale funzione pubblicare. Se nessuna funzione e' dichiarata qui, il
+#    passo di deploy finisce con un avviso e non pubblica niente.
+
+[functions.scarico]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/scarico/index.ts"

@@ -1,0 +1,70 @@
+# Pubblica il sito "Scarico" come funzione Supabase a ogni push.
+#
+# Prima che funzioni servono due segreti nelle impostazioni del repository
+# (Settings > Secrets and variables > Actions > New repository secret):
+#
+#   SUPABASE_ACCESS_TOKEN   il token personale di Supabase
+#   SUPABASE_PROJECT_REF    il riferimento del progetto (la parte prima di
+#                           .supabase.co nell'indirizzo del progetto)
+#
+# Finche' mancano, questo workflow si ferma subito e lo dice, invece di
+# fallire con un errore oscuro.
+
+name: Pubblica Scarico su Supabase
+
+on:
+  push:
+    branches: [main, claude/sharp-galileo-eweby4]
+    paths:
+      - "scarico-pin-insta/deno/**"
+      - "scarico-pin-insta/web/**"
+      - "scarico-pin-insta/supabase/**"
+      - "scarico-pin-insta/tools/build_supabase.py"
+      - ".github/workflows/scarico-supabase.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pubblica:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scarico-pin-insta
+    steps:
+      - name: Prendo il codice
+        uses: actions/checkout@v4
+
+      - name: Controllo che i segreti ci siano
+        env:
+          TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          if [ -z "$TOKEN" ] || [ -z "$REF" ]; then
+            echo "::error::Mancano i segreti SUPABASE_ACCESS_TOKEN e/o SUPABASE_PROJECT_REF."
+            echo "Aggiungili in Settings > Secrets and variables > Actions, poi rilancia."
+            exit 1
+          fi
+
+      - name: Rigenero la funzione dal sorgente
+        run: |
+          python3 tools/build_supabase.py
+          # Se il file committato era vecchio, qui viene sostituito da quello
+          # giusto: non si pubblica mai una versione diversa dal sorgente.
+          git --no-pager diff --stat -- supabase/ || true
+
+      - name: Installo la CLI di Supabase
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Pubblico
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: supabase functions deploy scarico --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
+
+      - name: Promemoria
+        run: |
+          echo "Pubblicata. Ricordati del segreto ACCESS_KEY fra i secrets"
+          echo "delle Edge Functions, altrimenti il sito resta aperto a chiunque."
