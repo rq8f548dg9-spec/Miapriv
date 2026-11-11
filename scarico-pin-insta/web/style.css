@@ -1,0 +1,387 @@
+/* Scarico - foglio di stile unico, mobile-first.
+
+   Colori: un primario viola (gli accenti, la minoranza dei pixel), una scala di
+   grigi tinta di viola (quasi tutta la superficie) e tre colori semantici usati
+   solo per dire com'e' andata. Il rosa compare solo dentro il gradiente del
+   bottone principale, per dare un punto caldo in una pagina fredda. */
+
+:root {
+  color-scheme: dark;
+
+  /* primario */
+  --p-300: #d8b4fe;
+  --p-400: #c084fc;
+  --p-500: #a855f7;
+  --p-600: #9333ea;
+  --rosa-600: #db2777;
+
+  /* neutri tinti di viola */
+  --n-950: #0c0a12;
+  --n-900: #141019;
+  --n-850: #1a1522;
+  --n-800: #221b2d;
+  --n-700: #312841;
+  --n-500: #6f6683;
+  --n-400: #9b91ad;
+  --n-200: #d9d3e3;
+  --n-50:  #f7f4fb;
+
+  --fondo: var(--n-950);
+  --superficie: rgba(255, 255, 255, 0.045);
+  --superficie-alta: rgba(255, 255, 255, 0.075);
+  --bordo: rgba(255, 255, 255, 0.10);
+  --bordo-forte: rgba(255, 255, 255, 0.18);
+  --testo: var(--n-50);
+  --testo-tenue: var(--n-400);
+
+  /* semantici: verde fatto, rosso guaio, ambra attenzione */
+  --ok-fondo: rgba(34, 197, 94, 0.16);
+  --ok-testo: #6ee7a0;
+  --no-fondo: rgba(244, 63, 94, 0.16);
+  --no-testo: #fb8da0;
+  --forse-fondo: rgba(245, 158, 11, 0.16);
+  --forse-testo: #fbbf4a;
+
+  --r-grande: 24px;
+  --r: 18px;
+  --r-piccolo: 12px;
+  --gutter: 18px;
+  --ombra: 0 18px 40px -12px rgba(0, 0, 0, 0.6);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --fondo: var(--n-50);
+    --superficie: #ffffff;
+    --superficie-alta: #ffffff;
+    --bordo: #e6dff1;
+    --bordo-forte: #d3c8e5;
+    --testo: #17121f;
+    --testo-tenue: #5d5570;
+    --ok-fondo: rgba(22, 163, 74, 0.12);
+    --ok-testo: #15803d;
+    --no-fondo: rgba(225, 29, 72, 0.10);
+    --no-testo: #be123c;
+    --forse-fondo: rgba(217, 119, 6, 0.12);
+    --forse-testo: #b45309;
+    --ombra: 0 16px 36px -14px rgba(60, 30, 90, 0.22);
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  background: var(--fondo);
+  color: var(--testo);
+  font: 17px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: break-word;
+  -webkit-tap-highlight-color: transparent;
+}
+
+[hidden] { display: none !important; }
+
+/* --------------------------------------------------------------- sfondo */
+
+.aurora { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+.blob { position: absolute; border-radius: 50%; filter: blur(90px); opacity: 0.55; }
+.blob-a {
+  width: 420px; height: 420px; top: -170px; right: -140px;
+  background: radial-gradient(circle, var(--p-500), transparent 68%);
+}
+.blob-b {
+  width: 380px; height: 380px; top: 180px; left: -180px;
+  background: radial-gradient(circle, var(--rosa-600), transparent 68%);
+  opacity: 0.38;
+}
+@media (prefers-color-scheme: light) {
+  .blob-a { opacity: 0.30; }
+  .blob-b { opacity: 0.22; }
+}
+
+/* -------------------------------------------------------------- testata */
+
+.testata {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: calc(14px + env(safe-area-inset-top)) var(--gutter) 6px;
+  max-width: 560px;
+  margin: 0 auto;
+}
+.logo { display: flex; align-items: center; gap: 9px; font-weight: 650; letter-spacing: -0.01em; }
+.logo img { border-radius: 8px; }
+.spia { font-size: 0.74rem; color: var(--testo-tenue); }
+
+.foglio {
+  position: relative;
+  z-index: 1;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 10px var(--gutter) calc(48px + env(safe-area-inset-bottom));
+  display: grid;
+  gap: 16px;
+}
+
+/* ----------------------------------------------------------------- eroe */
+
+.eroe { padding: 18px 2px 2px; }
+.eroe h1 {
+  margin: 0;
+  font-size: clamp(2rem, 9vw, 2.6rem);
+  line-height: 1.08;
+  letter-spacing: -0.035em;
+  font-weight: 700;
+}
+.eroe em {
+  font-style: normal;
+  background: linear-gradient(100deg, var(--p-400), var(--rosa-600));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+/* L'occhiello sta sotto e piu' piccolo del titolo: non deve competerci. */
+.occhiello { margin: 12px 0 0; color: var(--testo-tenue); font-size: 0.95rem; }
+
+/* --------------------------------------------------------------- schede */
+
+.scheda {
+  background: var(--superficie);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r-grande);
+  padding: 16px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.incolla form { display: grid; gap: 12px; }
+
+textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 1rem;              /* sotto i 16px iOS ingrandisce la pagina da solo */
+  color: var(--testo);
+  background: var(--superficie-alta);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r);
+  padding: 15px 16px;
+  resize: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+textarea::placeholder { color: var(--n-500); }
+textarea:focus {
+  outline: none;
+  border-color: var(--p-500);
+  box-shadow: 0 0 0 4px rgba(168, 85, 247, 0.18);
+}
+
+/* -------------------------------------------------------------- bottoni */
+
+.bottone {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font: inherit;
+  font-weight: 650;
+  text-align: center;
+  text-decoration: none;
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  padding: 15px 18px;
+  min-height: 52px;
+  cursor: pointer;
+  transition: transform 0.08s ease, opacity 0.15s ease, background-color 0.15s ease;
+}
+.bottone:active { transform: scale(0.985); }
+.bottone[disabled] { opacity: 0.6; cursor: default; }
+.grande { min-height: 56px; font-size: 1.05rem; }
+
+.primario {
+  /* Bianco su questi due viola/rosa supera 4.5:1: leggibile anche al sole. */
+  background: linear-gradient(100deg, var(--p-600), var(--rosa-600));
+  color: #ffffff;
+  box-shadow: 0 10px 26px -10px rgba(147, 51, 234, 0.75);
+}
+.secondario { background: var(--superficie-alta); color: var(--testo); border-color: var(--bordo-forte); }
+.fantasma { background: transparent; color: var(--testo-tenue); border-color: var(--bordo); min-height: 46px; }
+.piccolo { min-height: 40px; padding: 9px 14px; font-size: 0.88rem; border-radius: var(--r-piccolo); }
+
+.etichetta-bottone { position: relative; z-index: 1; }
+
+/* Barra di avanzamento dentro al bottone: il progresso si legge dove si tocca. */
+.riempimento {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: rgba(255, 255, 255, 0.26);
+  transition: width 0.18s ease;
+  z-index: 0;
+}
+.bottone.pronto {
+  background: linear-gradient(100deg, #16a34a, #0f9d6b);
+  box-shadow: 0 10px 26px -10px rgba(22, 163, 74, 0.7);
+}
+
+/* ------------------------------------------------------------- messaggi */
+
+.stato {
+  margin: 12px 0 0;
+  font-size: 0.92rem;
+  padding: 12px 14px;
+  border-radius: var(--r-piccolo);
+  background: var(--superficie-alta);
+  border: 1px solid var(--bordo);
+  color: var(--testo-tenue);
+}
+.stato.lavorando { border-color: rgba(168, 85, 247, 0.5); color: var(--testo); }
+.stato.fatto { background: var(--ok-fondo); border-color: transparent; color: var(--ok-testo); }
+.stato.guaio { background: var(--no-fondo); border-color: transparent; color: var(--no-testo); }
+.stato.attenzione { background: var(--forse-fondo); border-color: transparent; color: var(--forse-testo); }
+
+.filatoio {
+  display: inline-block;
+  width: 13px; height: 13px;
+  margin-right: 8px;
+  vertical-align: -1px;
+  border: 2px solid rgba(168, 85, 247, 0.3);
+  border-top-color: var(--p-400);
+  border-radius: 50%;
+  animation: gira 0.7s linear infinite;
+}
+@keyframes gira { to { transform: rotate(360deg); } }
+
+/* ----------------------------------------------------------- risultati */
+
+.risultati { display: grid; gap: 16px; }
+
+.risultato {
+  background: var(--superficie);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r-grande);
+  overflow: hidden;
+  box-shadow: var(--ombra);
+  animation: entra 0.28s ease both;
+}
+@keyframes entra { from { opacity: 0; transform: translateY(10px); } }
+
+.cornice {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  background: var(--superficie-alta);
+}
+.cornice img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cornice .sfumatura {
+  position: absolute; inset: 0;
+  background: linear-gradient(to top, rgba(8, 6, 12, 0.88) 0%, rgba(8, 6, 12, 0) 52%);
+}
+.bollo {
+  position: absolute;
+  top: 12px; left: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 650;
+  color: #fff;
+  background: rgba(10, 8, 16, 0.6);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.didascalia { position: absolute; left: 0; right: 0; bottom: 0; padding: 16px; color: #fff; }
+.didascalia h3 {
+  margin: 0 0 6px;
+  font-size: 1.02rem;
+  line-height: 1.28;
+  font-weight: 650;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.5);
+}
+.didascalia .meta { margin: 0; font-size: 0.82rem; color: rgba(255, 255, 255, 0.82); }
+.meta .punto { opacity: 0.55; margin: 0 6px; }
+
+.azioni { display: grid; gap: 9px; padding: 14px; }
+
+/* ----------------------------------------------------- guida e avvisi */
+
+.guida h2 { margin: 0 0 14px; font-size: 1.05rem; }
+.passi { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 12px; font-size: 0.95rem; }
+/* Due celle e basta: il numero e il testo. Se il testo del passo finisse
+   spezzato in piu' figli, ogni pezzo diventerebbe una cella a se' e andrebbe
+   a capo in colonna. */
+.passi li { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 11px; align-items: start; }
+.numero {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--p-600), var(--rosa-600));
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.avviso { border-color: rgba(245, 158, 11, 0.45); }
+.titolo-avviso { font-size: 1.2rem; margin: 0 0 10px; }
+.avviso code {
+  background: var(--superficie-alta);
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 0.88em;
+}
+.promemoria { display: grid; gap: 10px; }
+.promemoria p { margin: 0; font-size: 0.93rem; color: var(--testo-tenue); }
+.promemoria .bottone { justify-self: start; }
+.glifo-condividi { vertical-align: -3px; color: var(--p-400); }
+.guida .bottone { justify-self: start; }
+
+.piede { text-align: center; color: var(--n-500); font-size: 0.74rem; }
+
+/* ---------------------------------------------------------------- toast */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(22px + env(safe-area-inset-bottom));
+  transform: translate(-50%, 16px);
+  z-index: 50;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 13px 18px;
+  border-radius: 999px;
+  font-size: 0.92rem;
+  font-weight: 550;
+  text-align: center;
+  color: #fff;
+  background: rgba(18, 14, 26, 0.94);
+  border: 1px solid var(--bordo-forte);
+  box-shadow: var(--ombra);
+  backdrop-filter: blur(14px);
+  opacity: 0;
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+.toast.visibile { opacity: 1; transform: translate(-50%, 0); }
+.toast.ok { background: #15803d; border-color: transparent; }
+.toast.no { background: #be123c; border-color: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  .filatoio { animation-duration: 2.4s; }
+  .risultato { animation: none; }
+  .bottone:active { transform: none; }
+  .toast, .riempimento { transition: none; }
+}
