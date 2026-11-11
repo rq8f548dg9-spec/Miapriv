@@ -83,7 +83,9 @@ jobs:
             supabase secrets set --project-ref "$REF" ACCESS_KEY="$CHIAVE" >/dev/null
             echo "chiave d'accesso impostata"
           else
-            echo "::warning::Nessun SCARICO_ACCESS_KEY: impostalo qui o fra i secrets delle Edge Functions, altrimenti il sito resta aperto a chiunque conosca l'indirizzo."
+            echo "Nessuna chiave impostata: il sito e' aperto a chiunque conosca l'indirizzo."
+            echo "Va bene finche' il link resta tuo: contiene il codice casuale del progetto."
+            echo "Per chiuderlo basta aggiungere il segreto SCARICO_ACCESS_KEY e ripubblicare."
           fi
           if [ -n "$COOKIE" ]; then
             supabase secrets set --project-ref "$REF" IG_COOKIES="$COOKIE" >/dev/null
@@ -93,4 +95,5 @@ jobs:
       - name: Dove trovarlo
         run: |
           echo "Il sito e' su:"
-          echo "  https://${{ secrets.SUPABASE_PROJECT_REF }}.supabase.co/functions/v1/scarico/?k=LA-TUA-CHIAVE"
+          echo "  https://${{ secrets.SUPABASE_PROJECT_REF }}.supabase.co/functions/v1/scarico/"
+          echo "(se hai impostato una chiave, aggiungi ?k=LA-TUA-CHIAVE)"
