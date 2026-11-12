@@ -1,0 +1,25 @@
+services:
+  trading-bot:
+    build: .
+    container_name: trading-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # La configurazione si modifica senza ricostruire l'immagine.
+      - ./config/config.yaml:/app/config/config.yaml:ro
+      # Dati, log e stato sopravvivono al riavvio del container: senza di
+      # questi volumi un riavvio perderebbe lo storico e il registro ordini.
+      - ./data_store:/app/data_store
+      - ./logs:/app/logs
+      - ./state:/app/state
+    # Il bot non espone porte: non accetta connessioni, le apre soltanto.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: 1G

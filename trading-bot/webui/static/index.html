@@ -1,0 +1,1497 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading bot — pannello</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --plane: #f3f3f0;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --series-1: #2a78d6;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --good-text: #006300;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --plane: #0d0d0d;
+      --text-primary: #f0efec;
+      --text-secondary: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --series-1: #3987e5;
+      --good-text: #0ca30c;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --plane: #0d0d0d;
+    --text-primary: #f0efec;
+    --text-secondary: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-1: #3987e5;
+    --good-text: #0ca30c;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--plane);
+    color: var(--text-primary);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  h3 { font-size: 14px; margin: 0 0 8px; color: var(--text-secondary); }
+  p { margin: 0 0 10px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+
+  header {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+    justify-content: space-between;
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px;
+  }
+  .headline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600; letter-spacing: .02em;
+    padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--plane);
+  }
+  .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .badge.good .dot { background: var(--good); }
+  .badge.warn .dot { background: var(--warning); }
+  .badge.crit .dot { background: var(--critical); }
+
+  button {
+    font: inherit; font-weight: 500; cursor: pointer;
+    padding: 8px 14px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface-1);
+    color: var(--text-primary);
+  }
+  button:hover:not(:disabled) { background: var(--plane); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--series-1); }
+  button.danger { border-color: var(--critical); color: var(--critical); }
+
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px; margin-bottom: 16px;
+  }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--border);
+          border-radius: var(--radius); padding: 12px 14px; }
+  .tile .label { font-size: 12px; color: var(--muted); text-transform: uppercase;
+                 letter-spacing: .04em; }
+  .tile .value { font-size: 24px; font-weight: 600; margin-top: 4px; }
+  .tile .sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  .pos { color: var(--good-text); }
+  .neg { color: var(--critical); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 600; color: var(--text-secondary);
+       border-bottom: 1px solid var(--axis); padding: 6px 8px; }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll { overflow-x: auto; }
+
+  label { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
+  input[type="text"], input[type="password"], input[type="number"] {
+    font: inherit; width: 100%; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--axis); background: var(--plane); color: var(--text-primary);
+  }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+
+  .steps { display: grid; gap: 12px; }
+  .step { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+  .step-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .step-num { width: 24px; height: 24px; border-radius: 50%; flex: none;
+              display: grid; place-items: center; font-size: 13px; font-weight: 600;
+              background: var(--plane); border: 1px solid var(--axis); }
+  .step.done .step-num { background: var(--good); border-color: var(--good); color: #fff; }
+  .step.done .step-title::after { content: " — fatto"; color: var(--good-text); font-weight: 500; }
+  .step-title { font-weight: 600; }
+
+  .msg { border-radius: 8px; padding: 10px 12px; margin-top: 10px; font-size: 13px;
+         border: 1px solid var(--border); background: var(--plane); }
+  .msg.ok { border-left: 3px solid var(--good); }
+  .msg.err { border-left: 3px solid var(--critical); }
+  .msg.warn { border-left: 3px solid var(--warning); }
+  .msg:empty { display: none; }
+
+  .chart-head { display: flex; justify-content: space-between; align-items: baseline;
+                gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+  svg { display: block; width: 100%; height: auto; touch-action: none; }
+  .tooltip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12);
+    font-variant-numeric: tabular-nums; white-space: nowrap; z-index: 5;
+  }
+  .chart-wrap { position: relative; }
+  .empty {
+    border: 1px dashed var(--axis); border-radius: var(--radius);
+    padding: 22px 16px; text-align: center; color: var(--muted); font-size: 13px;
+  }
+
+  details.decision { border-bottom: 1px solid var(--grid); }
+  details.decision summary {
+    cursor: pointer; padding: 8px 4px; display: grid; gap: 8px; align-items: center;
+    grid-template-columns: 70px 90px 1fr auto; font-size: 13px;
+  }
+  details.decision summary::-webkit-details-marker { display: none; }
+  details.decision .body { padding: 4px 8px 12px; font-size: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { background: var(--plane); border: 1px solid var(--border); border-radius: 6px;
+          padding: 2px 7px; font-variant-numeric: tabular-nums; }
+  .reason { color: var(--text-secondary); }
+
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+             margin-bottom: 10px; }
+  .toolbar select { font: inherit; padding: 6px 8px; border-radius: 8px;
+                    border: 1px solid var(--axis); background: var(--plane);
+                    color: var(--text-primary); }
+  .hidden { display: none !important; }
+
+  /* Bottoncino "i": spiega un campo senza riempire la pagina di testo. */
+  .info {
+    width: 18px; height: 18px; padding: 0; margin-left: 6px;
+    border-radius: 50%; border: 1px solid var(--axis); background: var(--plane);
+    color: var(--text-secondary); font-size: 11px; font-weight: 700;
+    line-height: 1; cursor: pointer; vertical-align: middle;
+  }
+  .info:hover, .info:focus-visible { border-color: var(--series-1); color: var(--series-1); }
+  /* Selettore con il tag: la regola generica "button:hover" ha specificita'
+     piu' alta di ".info[...]" e lasciava il bottone aperto bianco su bianco. */
+  button.info[aria-expanded="true"],
+  button.info[aria-expanded="true"]:hover {
+    background: var(--series-1); border-color: var(--series-1); color: #fff;
+  }
+  .popover {
+    position: absolute; z-index: 30; max-width: 320px;
+    background: var(--surface-1); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; font-size: 13px; line-height: 1.5;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+  }
+  .popover h4 { margin: 0 0 6px; font-size: 13px; }
+  .popover p { margin: 0 0 8px; }
+  .popover p:last-child { margin: 0; }
+  .popover .esempio { color: var(--text-secondary); }
+  footer { color: var(--muted); font-size: 12px; padding: 8px 0 24px; }
+  @media (max-width: 560px) {
+    details.decision summary { grid-template-columns: 60px 1fr; }
+    .wrap { padding: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="headline">
+    <h1>Trading bot</h1>
+    <span class="badge" id="badge-mode"><span class="dot"></span><span>—</span></span>
+    <span class="badge" id="badge-state"><span class="dot"></span><span>—</span></span>
+    <span class="badge crit hidden" id="badge-killswitch"><span class="dot"></span><span>kill switch</span></span>
+  </div>
+  <div class="actions">
+    <button class="primary" id="btn-start">Avvia il bot</button>
+    <button id="btn-stop" disabled>Ferma</button>
+    <button class="danger" id="btn-flatten" disabled>Chiudi tutte le posizioni</button>
+  </div>
+</header>
+
+<div class="msg err hidden" id="global-error"></div>
+<div class="msg warn hidden" id="start-hint"></div>
+
+<!-- ───────────────── preparazione ───────────────── -->
+<section class="card" id="setup">
+  <h2>Preparazione</h2>
+  <div class="steps">
+
+    <div class="step" id="step-keys">
+      <div class="step-head"><span class="step-num">1</span>
+        <span class="step-title">Collega la testnet di Binance</span><button type="button" class="info" data-info="chiavi" aria-expanded="false" aria-label="Che cos'è: le chiavi della testnet">i</button></div>
+      <p class="small muted">
+        Vai su <strong>testnet.binance.vision</strong>, accedi con GitHub e genera una coppia
+        di chiavi API. Sono chiavi di prova su denaro finto: qui non puoi collegare un conto reale.
+      </p>
+      <div class="fields">
+        <div><label for="api-key">Chiave API</label>
+          <input type="text" id="api-key" autocomplete="off" spellcheck="false"></div>
+        <div><label for="api-secret">Segreto API</label>
+          <input type="password" id="api-secret" autocomplete="off" spellcheck="false"></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="btn-save-keys">Salva e verifica</button>
+        <span class="small muted">Le chiavi finiscono in <code>.env</code>, mai nei log.</span>
+      </div>
+      <div class="msg" id="msg-keys"></div>
+      <p class="small muted" id="keys-paper"></p>
+    </div>
+
+    <div class="step" id="step-data">
+      <div class="step-head"><span class="step-num">2</span>
+        <span class="step-title">Scarica lo storico dei prezzi</span><button type="button" class="info" data-info="storico" aria-expanded="false" aria-label="Che cos'è: lo storico dei prezzi">i</button></div>
+      <p class="small muted">Serve per provare la strategia prima di farla girare.</p>
+      <div class="row">
+        <div style="max-width:140px"><label for="days">Giorni di prezzi</label>
+          <input type="number" id="days" value="30" min="1" max="365"></div>
+        <div style="max-width:170px"><label for="flow-hours">Ore di flusso ordini</label>
+          <input type="number" id="flow-hours" value="6" min="0" max="48"></div>
+        <button id="btn-fetch">Scarica</button>
+      </div>
+      <p class="small muted">
+        Il flusso ordini è l'elenco degli scambi avvenuti: il bot lo usa per metà
+        delle sue valutazioni, e senza, la prova della strategia è cieca su quella
+        metà. È <strong>enormemente</strong> più voluminoso dei prezzi — BTCUSDT fa
+        milioni di scambi al giorno — quindi se ne scaricano poche ore, e solo per
+        le coppie accese. Oltre 200.000 scambi per coppia si ferma da solo: bastano
+        a misurare, e aspettare di più non aggiunge nulla.
+      </p>
+      <div class="msg" id="msg-data"></div>
+    </div>
+
+    <div class="step" id="step-backtest">
+      <div class="step-head"><span class="step-num">3</span>
+        <span class="step-title">Prova la strategia sullo storico</span><button type="button" class="info" data-info="prova" aria-expanded="false" aria-label="Che cos'è: la prova sullo storico">i</button></div>
+      <p class="small muted">
+        Misura se la strategia regge le commissioni. Se non le regge, il bot te lo dice:
+        è il cancello da superare prima di tutto il resto.
+      </p>
+      <button id="btn-backtest">Esegui la prova</button>
+      <div class="msg" id="msg-backtest"></div>
+      <div id="backtest-result" class="hidden" style="margin-top:12px"></div>
+    </div>
+
+    <div class="step" id="step-frequenza">
+      <div class="step-head"><span class="step-num">4</span>
+        <span class="step-title">Quanto spesso vuoi che operi</span><button type="button" class="info" data-info="frequenza" aria-expanded="false" aria-label="Che cos'è: la scelta della frequenza">i</button></div>
+      <p class="small muted">
+        Misura sullo stesso storico quante operazioni farebbe ogni impostazione e
+        quanto costerebbero. Poi scegli tu: più operazioni significano più
+        commissioni, e la tabella dice quante.
+      </p>
+      <button id="btn-frequenza">Misura le impostazioni</button>
+      <div class="msg" id="msg-frequenza"></div>
+      <div id="frequenza-result" class="hidden" style="margin-top:12px"></div>
+    </div>
+
+    <div class="step" id="step-esperimenti">
+      <div class="step-head"><span class="step-num">5</span>
+        <span class="step-title">Prova varianti dei parametri</span><button type="button" class="info" data-info="esperimenti" aria-expanded="false" aria-label="Che cos'è: gli esperimenti sui parametri">i</button></div>
+      <p class="small muted">
+        Misura alcune varianti su finestre temporali separate e dice quali reggono.
+        Non cambia niente da solo: propone, e decidi tu.
+      </p>
+      <button id="btn-esperimenti">Prova le varianti</button>
+      <div class="msg" id="msg-esperimenti"></div>
+      <div id="esperimenti-result" class="hidden" style="margin-top:12px"></div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ───────────────── cosa sta succedendo ───────────────── -->
+<section class="card" id="card-attivita">
+  <h2>Cosa sta succedendo<button type="button" class="info" data-info="attivita" aria-expanded="false" aria-label="Che cos'è: cosa sta facendo il bot adesso">i</button></h2>
+  <p id="attivita-stato" style="font-weight:600;margin:.2rem 0"></p>
+  <p class="small muted" id="attivita-spiegazione"></p>
+  <div class="scroll" id="attivita-simboli"></div>
+</section>
+
+<!-- ───────────────── situazione ───────────────── -->
+<section class="card">
+  <h2>Situazione<button type="button" class="info" data-info="situazione" aria-expanded="false" aria-label="Che cos'è: che cosa vedi qui">i</button></h2>
+  <div class="tiles" id="tiles"></div>
+</section>
+
+<!-- ───────────────── capitale ───────────────── -->
+<section class="card" id="card-capitale">
+  <h2>Capitale in gestione<button type="button" class="info" data-info="capitale" aria-expanded="false" aria-label="Che cos'è: capitale in gestione">i</button></h2>
+  <div class="tiles" id="capitale-tiles"></div>
+  <p class="small muted" id="capitale-avvertenza"></p>
+  <div class="toolbar">
+    <select id="mov-tipo">
+      <option value="conferimento">Ho versato</option>
+      <option value="prelievo">Ho prelevato</option>
+    </select>
+    <input id="mov-importo" type="number" step="0.01" min="0" placeholder="importo" style="max-width:10rem">
+    <button id="btn-movimento" class="small">Registra il movimento</button>
+    <span class="small muted" id="msg-movimento"></span>
+  </div>
+</section>
+
+<!-- ───────────────── prezzi dal vivo ───────────────── -->
+<section class="card" id="card-prezzi">
+  <h2>Prezzi dal vivo<button type="button" class="info" data-info="prezzi" aria-expanded="false" aria-label="Che cos'è: i prezzi dal vivo">i</button></h2>
+  <p class="small muted" id="prezzi-nota">Compaiono quando il bot è in esecuzione: è la prova che i dati stanno arrivando.</p>
+  <div id="prezzi-grafici"></div>
+</section>
+
+<!-- ───────────────── equity ───────────────── -->
+<section class="card">
+  <div class="chart-head">
+    <h2 style="margin:0">Andamento del capitale<button type="button" class="info" data-info="grafico" aria-expanded="false" aria-label="Che cos'è: andamento del capitale">i</button></h2>
+    <button id="btn-table" class="small">Mostra i dati</button>
+  </div>
+  <p class="small muted" id="chart-note">Il grafico si muove quando un'operazione si chiude: finché il bot non compra e rivende, la linea resta ferma anche se sta lavorando. Il riquadro «Cosa sta succedendo» qui sopra dice a che punto è.</p>
+  <div class="chart-wrap">
+    <svg id="chart" class="hidden" viewBox="0 0 720 240" role="img"
+         aria-label="Andamento del capitale nel tempo"></svg>
+    <div class="empty" id="chart-empty">
+      Nessuna rilevazione ancora: il capitale viene campionato ogni cinque secondi
+      mentre il bot è in esecuzione.
+    </div>
+    <div class="tooltip" id="tooltip"></div>
+  </div>
+  <div class="scroll hidden" id="chart-table"></div>
+</section>
+
+<!-- ───────────────── posizioni ───────────────── -->
+<section class="card">
+  <h2>Posizioni aperte</h2>
+  <div class="scroll" id="positions"></div>
+</section>
+
+<!-- ───────────────── decisioni ───────────────── -->
+<section class="card">
+  <h2>Decisioni del bot<button type="button" class="info" data-info="decisioni" aria-expanded="false" aria-label="Che cos'è: le decisioni del bot">i</button></h2>
+  <p class="small muted">
+    Ogni riga è una valutazione. Aprila per vedere i numeri che l'hanno prodotta:
+    i rifiuti sono i più istruttivi, dicono cosa manca alla strategia.
+  </p>
+  <div class="toolbar">
+    <select id="filter-decisions">
+      <option value="tutte">Tutte</option>
+      <option value="approvate">Solo approvate</option>
+      <option value="rifiutate">Solo rifiutate</option>
+    </select>
+    <span class="small muted" id="decisions-count"></span>
+  </div>
+  <div id="decisions"></div>
+</section>
+
+<!-- ───────────────── impostazioni ───────────────── -->
+<section class="card">
+  <h2>Impostazioni</h2>
+  <p class="small muted">
+    Modificabili solo a bot fermo. I valori vengono validati prima di essere salvati.
+    Il capitale è un <strong>tetto</strong>: anche se il conto di prova ha molto di più,
+    il bot si limita a questa cifra, così la prova somiglia al conto vero.
+  </p>
+  <div class="fields" id="settings"></div>
+  <div class="row" style="margin-top:14px">
+    <button class="primary" id="btn-save-settings">Salva impostazioni</button>
+  </div>
+  <div class="msg" id="msg-settings"></div>
+</section>
+
+<footer>
+  Il pannello funziona solo su questo computer e non può passare a denaro reale:
+  quel passaggio richiede una modifica al file di configurazione più una variabile
+  d'ambiente, di proposito.
+</footer>
+</div>
+
+<div class="popover hidden" id="popover" role="dialog" aria-live="polite"></div>
+
+<script>
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+
+/* Ogni testo che arriva dall'API passa di qui prima di entrare in innerHTML.
+   I simboli e i messaggi nascono dal flusso di mercato e dalle risposte
+   dell'exchange: sono dati, non marcatura, e vanno scritti come tali. */
+const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = (value) =>
+  String(value === null || value === undefined ? '' : value)
+    .replace(/[&<>"']/g, (c) => ESCAPES[c]);
+/* ───────────────── spiegazioni (bottoncini "i") ─────────────────
+   Un testo per chiave; il bottone lo apre vicino a se'. Nessuna libreria:
+   un fumetto solo, riposizionato ogni volta. */
+
+const INFO = {
+  prezzi: {
+    titolo: 'Prezzi dal vivo',
+    testo: `La curva del capitale resta piatta finché non si chiude un'operazione:
+      con il bot acceso e nessuna operazione sembra tutto fermo. Il prezzo invece si
+      muove sempre, e vederlo muoversi è la prova che i dati stanno arrivando dal
+      mercato. Una linea per coppia, aggiornata ogni pochi secondi, con minimo,
+      massimo e variazione da quando hai avviato.`,
+    esempio: 'Se la linea si ferma, il flusso è caduto: lo trovi scritto anche nel riquadro «Cosa sta succedendo».',
+  },
+  capitale: {
+    titolo: 'Capitale che il bot può usare',
+    testo: `È un <strong>tetto</strong>, non una stima. Il conto di prova di Binance
+      ha migliaia di USDT finti: se qui scrivi 200, il bot ragiona come se ne avesse
+      200 e basta. Le posizioni restano in proporzione e gli stop scattano alle stesse
+      cifre che avresti sul conto vero.<br><br>
+      Questo numero vale al <strong>primo avvio</strong>, quando apre il registro del
+      capitale. Dopo, la base è quella del riquadro «Capitale in gestione», che
+      cresce con i guadagni: cambiare qui non riscrive la storia del conto, per
+      aggiungere o togliere denaro si registra un movimento.`,
+    esempio: 'Tienilo uguale alla cifra che useresti davvero.',
+  },
+  ordine_target: {
+    titolo: 'Valore di un ordine',
+    testo: `È <strong>quanto vale un ordine</strong>: il bot non lo supera mai. La
+      formula di Kelly può solo ridurlo quando il segnale è debole, e se lo riduce
+      troppo l'ordine non si fa. Attenzione al minimo di Binance: su molte coppie
+      è 5 USDT, e il bot ne chiede il 10% in più per non farsi rifiutare l'ordine
+      al primo movimento del prezzo. Se metti meno del minimo, il bot te lo dice
+      all'avvio e non opererà su quella coppia.`,
+    esempio: 'Con 200 di capitale, 6 è un ordine piccolo e inviabile.',
+  },
+  ordine_massimo: {
+    titolo: 'Ordine massimo',
+    testo: `Il tetto vero sulla taglia di un singolo ordine. Qualunque cosa dica
+      Kelly, il bot non supera questa cifra. C'è anche un secondo tetto automatico
+      al 10% del capitale.`,
+    esempio: 'Con capitale 200 e ordine massimo 20, ogni posizione vale al massimo il 10%.',
+  },
+  posizioni_massime: {
+    titolo: 'Posizioni aperte al massimo',
+    testo: `Quante posizioni il bot può tenere aperte contemporaneamente.
+      <strong>Non può superare il numero di simboli abilitati</strong>: con due simboli,
+      il massimo è due, altrimenti il limite non avrebbe alcun effetto e il bot rifiuta
+      di salvare.`,
+    esempio: 'Oggi i simboli abilitati sono BTCUSDT ed ETHUSDT: il valore utile è 1 o 2.',
+  },
+  esposizione_massima: {
+    titolo: 'Esposizione massima totale',
+    testo: `La somma del valore di tutte le posizioni aperte insieme. Non può superare
+      il capitale: sul mercato spot non esiste leva, e chiedere più soldi di quelli
+      che hai non è possibile.`,
+    esempio: 'Con capitale 200, un valore ragionevole è 50–100.',
+  },
+  drawdown_giornaliero: {
+    titolo: 'Stop se perdo in giornata',
+    testo: `Quanto sei disposto a perdere in una sola giornata, come frazione:
+      0,03 vuol dire 3%. Quando viene toccato, il bot <strong>chiude tutto e si
+      ferma</strong>, e non riparte da solo: deve guardarci una persona.`,
+    esempio: 'Con capitale 200, il 3% sono 6 USDT.',
+  },
+  drawdown_totale: {
+    titolo: 'Stop se perdo in totale',
+    testo: `Come sopra, ma misurato dal punto più alto mai raggiunto dal capitale,
+      non dall'inizio della giornata. Deve essere <strong>maggiore o uguale</strong>
+      allo stop giornaliero, altrimenti quello giornaliero non scatterebbe mai per primo.`,
+    esempio: 'Con capitale 200, il 10% sono 20 USDT.',
+  },
+  perdite_consecutive: {
+    titolo: 'Stop dopo N perdite di fila',
+    testo: `Una serie di perdite consecutive è il segnale che le condizioni sono
+      cambiate e la strategia non le sta leggendo. Al raggiungimento del numero il bot
+      si ferma, anche se in euro ha perso poco.`,
+    esempio: 'Una sola operazione in guadagno azzera il contatore.',
+  },
+  probabilita_minima: {
+    titolo: 'Probabilità minima per operare',
+    testo: `Il bot stima la probabilità che un'operazione vada a buon fine. Sotto
+      questa soglia non opera. 0,50 vorrebbe dire «testa o croce»: 0,55 significa
+      pretendere un vantaggio misurabile.`,
+    esempio: 'Alzarla rende il bot più selettivo: meno operazioni, più motivate.',
+  },
+  edge_minimo_bps: {
+    titolo: 'Vantaggio minimo dopo i costi',
+    testo: `In punti base: 1 bps = 0,01%. Il guadagno atteso deve superare i costi
+      (commissioni e slippage, circa 20–25 bps per un giro completo) di almeno questo
+      margine, <strong>altrimenti il bot sta fermo</strong>.`,
+    esempio: 'È il motivo più frequente di rifiuto: significa che il segnale non paga le fee.',
+  },
+  capitale: {
+    titolo: 'Capitale in gestione',
+    testo: `Tre numeri tenuti separati apposta. <strong>Versato da te</strong> è il
+      denaro entrato da fuori; <strong>guadagnato dal bot</strong> è il risultato delle
+      operazioni, al netto delle commissioni; <strong>in gestione</strong> è quello che
+      c'è adesso, ed è la base su cui il bot dimensiona. Cento che diventano
+      centotrenta restano centotrenta anche dopo un riavvio: il guadagno si reinveste
+      da solo. I <strong>limiti di rischio non si alzano mai da soli</strong>: restano
+      quelli che hai messo nelle impostazioni.`,
+    esempio: 'Registrare un movimento è contabilità: il bonifico lo fai tu sull\'exchange, il bot non ha il permesso di prelievo.',
+  },
+  esperimenti: {
+    titolo: 'Prova varianti dei parametri',
+    testo: `Il modo facile di "migliorare" un bot è provare cento varianti sugli stessi
+      dati e tenere la migliore. È anche il modo facile di ottenere un bot che ha
+      imparato a memoria il passato: con cento tentativi la migliore sembra brava
+      anche se sono tutte inutili.<br><br>
+      Qui le varianti sono poche e scelte prima, e vengono misurate su
+      <strong>finestre temporali separate</strong>: una variante è proposta solo se
+      regge in più finestre, non se vince in media. Gli esperimenti restano scritti
+      con l'impronta dei dati, così rifare la stessa prova finché "viene bene" si
+      vede. I parametri di rischio sono esclusi per costruzione.`,
+    esempio: 'Nessuna variante viene applicata da sola: le modifiche le fai tu nelle impostazioni.',
+  },
+  frequenza: {
+    titolo: 'Quanto spesso vuoi che operi',
+    testo: `Ogni giro completo (compra e rivendi) costa circa <strong>22 punti
+      base</strong>, cioè lo 0,22% del valore scambiato, fra commissioni e spread.
+      Cento operazioni al giorno costano quindi il 22% del controvalore scambiato
+      <em>ogni giorno</em>: è il motivo per cui "operare in continuazione" non è
+      gratis, e la tabella lo mette in colonna.<br><br>
+      Le impostazioni cambiano <strong>quanto deve essere forte un segnale</strong>
+      perché valga la pena. Nessuna scende sotto il pareggio atteso: lì sotto il bot
+      pagherebbe per operare, e più opererebbe più pagherebbe. I limiti di rischio
+      (esposizione, stop, kill switch) non vengono toccati da questa scelta.`,
+    esempio: 'Se tutte le righe mostrano zero operazioni, il vantaggio stimato non copre i costi su quei dati: è un\'informazione, non un guasto.',
+  },
+  attivita: {
+    titolo: 'Cosa sta facendo il bot adesso',
+    testo: `Prima di poter decidere, il bot ha bisogno di un certo numero di
+      <strong>candele chiuse</strong> per ogni coppia: sono la memoria con cui calcola
+      volatilità, medie e slancio. Con candele da un minuto, riempirle dal vivo richiede
+      ore; lo storico scaricato al passo 2 le fornisce subito, all'avvio.
+      Quando i dati bastano, il bot valuta a ogni giro e <strong>quasi sempre rifiuta</strong>:
+      apre solo se il vantaggio stimato supera commissioni e spread. Un bot fermo che
+      spiega perché non è un bot rotto.`,
+    esempio: 'Se l\'ultimo dato risale a più di due minuti fa, il flusso è caduto e il bot sta già riprovando.',
+  },
+  situazione: {
+    titolo: 'Che cosa vedi qui',
+    testo: `<strong>Capitale</strong>: liquidità più valore delle posizioni.
+      <strong>Guadagno</strong>: realizzato più non realizzato, al netto delle
+      commissioni. <strong>Perdita oggi</strong>: quanto sei sceso rispetto
+      all'apertura della giornata. <strong>Protezione</strong>: lo stato del kill
+      switch, cioè il blocco automatico.`,
+  },
+  grafico: {
+    titolo: 'Andamento del capitale',
+    testo: `Il capitale viene campionato ogni cinque secondi mentre il bot è in
+      esecuzione. Passando il mouse vedi il valore esatto in ogni istante; il pulsante
+      «Mostra i dati» apre gli stessi numeri in tabella.`,
+    esempio: 'A bot fermo il grafico resta vuoto: non ci sono rilevazioni da mostrare.',
+  },
+  decisioni: {
+    titolo: 'Le decisioni del bot',
+    testo: `Ogni riga è una valutazione fatta dal bot, anche quando ha deciso di
+      <strong>non</strong> operare. Aprendola vedi i motivi del rifiuto e i numeri
+      (le «feature») su cui ha deciso.`,
+    esempio: 'I rifiuti sono i più utili: dicono cosa manca perché la strategia funzioni.',
+  },
+  chiavi: {
+    titolo: 'Le chiavi della testnet',
+    testo: `La testnet è una copia di Binance con <strong>denaro finto</strong>: stessi
+      prezzi, stesse regole, zero rischio. Le chiavi che generi lì non hanno alcun
+      potere sul tuo conto vero.`,
+    esempio: 'Vengono salvate nel file .env sul tuo computer e non compaiono mai nei log.',
+  },
+  storico: {
+    titolo: 'Lo storico dei prezzi',
+    testo: `Scarica le candele dei giorni passati, cioè prezzo di apertura, massimo,
+      minimo e chiusura di ogni minuto. Servono a provare la strategia sul passato
+      prima di farla operare sul presente.`,
+    esempio: '60 giorni sono circa 86.000 candele per simbolo: bastano e avanzano.',
+  },
+  prova: {
+    titolo: 'La prova sullo storico',
+    testo: `Rigioca la strategia sui dati scaricati applicando commissioni, slippage
+      e ritardo di esecuzione, poi dice se nonostante tutto questo resta in guadagno.
+      È il <strong>cancello</strong>: se non lo supera, non ha senso farla operare.
+      Attenzione a cosa <strong>non</strong> può dirti: lo storico contiene candele,
+      non il flusso degli scambi né il book, quindi la parte di strategia che legge
+      la microstruttura qui non viene provata. Un esito positivo significa
+      «regge i costi sui prezzi passati», non «guadagnerà».`,
+    esempio: 'Decide alla chiusura di una candela ed esegue all\'apertura della successiva, mai prima.',
+  },
+};
+
+const popover = $('popover');
+let openInfo = null;
+
+function infoButton(key) {
+  return INFO[key]
+    ? `<button type="button" class="info" data-info="${key}"
+        aria-expanded="false" aria-label="Che cos'è: ${INFO[key].titolo}">i</button>`
+    : '';
+}
+
+function closeInfo() {
+  if (!openInfo) return;
+  openInfo.setAttribute('aria-expanded', 'false');
+  popover.classList.add('hidden');
+  openInfo = null;
+}
+
+function toggleInfo(button) {
+  const entry = INFO[button.dataset.info];
+  if (!entry) return;
+  if (openInfo === button) { closeInfo(); return; }
+  closeInfo();
+
+  popover.innerHTML = `<h4>${entry.titolo}</h4><p>${entry.testo}</p>` +
+    (entry.esempio ? `<p class="esempio">${entry.esempio}</p>` : '');
+  popover.classList.remove('hidden');
+
+  const box = button.getBoundingClientRect();
+  const width = popover.offsetWidth;
+  const left = Math.min(
+    Math.max(8, box.left + window.scrollX - width / 2 + box.width / 2),
+    window.scrollX + document.documentElement.clientWidth - width - 8,
+  );
+  popover.style.left = left + 'px';
+  popover.style.top = (box.bottom + window.scrollY + 8) + 'px';
+  button.setAttribute('aria-expanded', 'true');
+  openInfo = button;
+}
+
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('.info');
+  if (button) { event.preventDefault(); toggleInfo(button); return; }
+  if (!event.target.closest('#popover')) closeInfo();
+});
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeInfo(); });
+window.addEventListener('resize', closeInfo);
+
+const fmt = (value, digits = 2) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toLocaleString('it-IT', {
+    minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
+};
+const pct = (value, digits = 2) =>
+  Number.isFinite(Number(value)) ? (Number(value) * 100).toFixed(digits) + '%' : '—';
+const clock = (ms) => new Date(ms).toLocaleTimeString('it-IT');
+const stamp = (ms) => new Date(ms).toLocaleString('it-IT');
+
+let state = null;
+let equityPoints = [];
+let decisions = [];
+let busy = false;
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  let payload = {};
+  try { payload = await response.json(); } catch (_) { /* risposta vuota */ }
+  if (!response.ok) throw new Error(payload.errore || `errore ${response.status}`);
+  return payload;
+}
+const post = (path, body) => api(path, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body || {}),
+});
+
+function note(id, text, kind) {
+  const element = $(id);
+  element.textContent = text || '';
+  element.className = 'msg' + (kind ? ' ' + kind : '');
+}
+
+function showError(message) {
+  const element = $('global-error');
+  element.textContent = message;
+  element.classList.toggle('hidden', !message);
+}
+
+/* ───────────────── intestazione e riquadri ───────────────── */
+
+function renderHeader(s) {
+  const mode = $('badge-mode');
+  mode.className = 'badge ' + (s.denaro_reale ? 'crit' : 'good');
+  mode.lastElementChild.textContent = s.denaro_reale ? 'DENARO REALE' : s.modalita.toUpperCase();
+
+  const running = $('badge-state');
+  running.className = 'badge ' + (s.in_esecuzione ? 'good' : '');
+  running.lastElementChild.textContent = s.in_esecuzione ? 'in esecuzione' : 'fermo';
+
+  const kill = $('badge-killswitch');
+  kill.classList.toggle('hidden', !s.killswitch.scattato);
+  if (s.killswitch.scattato) kill.title = s.killswitch.motivo || '';
+
+  let hint = '';
+  if (s.modalita === 'backtest') {
+    hint = "La configurazione è in modalità «backtest»: il pannello analizza i dati " +
+           "storici ma non fa operare il bot. Per farlo girare imposta «testnet» " +
+           "in config/config.yaml.";
+  } else if (!s.credenziali_presenti) {
+    hint = 'Inserisci le chiavi API nel passo 1 per poter avviare il bot.';
+  }
+  $('start-hint').textContent = hint;
+  $('start-hint').classList.toggle('hidden', !hint || s.in_esecuzione);
+
+  $('btn-start').disabled =
+    s.in_esecuzione || busy || s.modalita === 'backtest' || !s.credenziali_presenti;
+  $('btn-stop').disabled = !s.in_esecuzione;
+  $('btn-flatten').disabled = !s.in_esecuzione || (s.posizioni || []).length === 0;
+  $('btn-save-settings').disabled = s.in_esecuzione;
+
+  $('step-keys').classList.toggle('done', s.credenziali_presenti);
+  $('step-data').classList.toggle('done', (s.dati?.totale || 0) > 0);
+}
+
+function tile(label, value, sub, cls) {
+  return `<div class="tile"><div class="label">${label}</div>
+    <div class="value ${cls || ''}">${value}</div>
+    <div class="sub">${sub || ''}</div></div>`;
+}
+
+async function refreshPrezzi() {
+  if (!state || !state.in_esecuzione) return;
+  try {
+    const dati = await api('/api/prezzi');
+    const serie = dati.serie || [];
+    if (!serie.length) {
+      $('prezzi-nota').textContent =
+        'Nessun prezzo ancora: il bot si è appena avviato o il flusso non è arrivato.';
+      $('prezzi-grafici').innerHTML = '';
+      return;
+    }
+    $('prezzi-nota').textContent =
+      serie.map(function (s) {
+        const ultimi = s.punti;
+        const primo = Number(ultimi[0].prezzo);
+        const ora = Number(ultimi.at(-1).prezzo);
+        const var_ = primo ? (100 * (ora - primo) / primo) : 0;
+        return s.simbolo + ' ' + fmt(ora) + ' (' + (var_ >= 0 ? '+' : '')
+          + var_.toFixed(2) + '% da inizio sessione)';
+      }).join(' · ');
+    $('prezzi-grafici').innerHTML = serie.map(sparkline).join('');
+  } catch (_) { /* il prossimo giro riprova */ }
+}
+
+function sparkline(serie) {
+  const punti = serie.punti;
+  if (punti.length < 2) return '';
+  const valori = punti.map(function (p) { return Number(p.prezzo); });
+  const minimo = Math.min.apply(null, valori);
+  const massimo = Math.max.apply(null, valori);
+  const spazio = (massimo - minimo) || Math.max(massimo * 0.0005, 0.01);
+  const w = 720, h = 90, pad = 6;
+  const X = function (i) { return pad + (i / (punti.length - 1)) * (w - 2 * pad); };
+  const Y = function (v) {
+    return pad + (h - 2 * pad) * (1 - (v - minimo + spazio * 0.1) / (spazio * 1.2));
+  };
+  const d = valori.map(function (v, i) {
+    return (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1);
+  }).join(' ');
+  const salito = valori.at(-1) >= valori[0];
+  const colore = salito ? 'var(--pos, #2e7d32)' : 'var(--neg, #c62828)';
+  return '<div style="margin:10px 0">'
+    + '<div class="small muted" style="display:flex;justify-content:space-between">'
+    + '<span><strong>' + esc(serie.simbolo) + '</strong></span>'
+    + '<span>min ' + fmt(minimo) + ' · max ' + fmt(massimo) + ' · '
+    + punti.length + ' rilevazioni</span></div>'
+    + '<svg viewBox="0 0 ' + w + ' ' + h + '" style="width:100%;height:90px" role="img" '
+    + 'aria-label="Andamento del prezzo di ' + esc(serie.simbolo) + '">'
+    + '<path d="' + d + '" fill="none" stroke="' + colore + '" stroke-width="2" '
+    + 'stroke-linejoin="round" stroke-linecap="round"/></svg></div>';
+}
+
+async function refreshCapitale() {
+  try {
+    const c = await api('/api/capitale');
+    $('capitale-tiles').innerHTML = [
+      tile('In gestione', fmt(c.in_gestione) + ' ' + c.valuta,
+           'liquido ' + fmt(c.liquido) + ' ' + c.valuta),
+      tile('Versato da te', fmt(c.conferito) + ' ' + c.valuta,
+           'prelevato ' + fmt(c.prelevato) + ' ' + c.valuta),
+      tile('Guadagnato dal bot', (Number(c.guadagno_netto) >= 0 ? '+' : '')
+           + fmt(c.guadagno_netto) + ' ' + c.valuta,
+           'commissioni ' + fmt(c.commissioni, 4),
+           Number(c.guadagno_netto) > 0 ? 'pos' : (Number(c.guadagno_netto) < 0 ? 'neg' : '')),
+    ].join('');
+    $('capitale-avvertenza').textContent = c.avvertenza || '';
+  } catch (_) { /* il prossimo giro riprova */ }
+}
+
+async function registraMovimento() {
+  const tipo = $('mov-tipo').value;
+  const importo = $('mov-importo').value;
+  if (!importo || Number(importo) <= 0) {
+    note('msg-movimento', 'Scrivi un importo maggiore di zero.', 'err');
+    return;
+  }
+  try {
+    await post('/api/capitale/movimento', { tipo: tipo, importo: String(importo) });
+    $('mov-importo').value = '';
+    note('msg-movimento', 'Movimento registrato.', 'ok');
+    await refreshCapitale();
+  } catch (error) {
+    note('msg-movimento', error.message, 'err');
+  }
+}
+
+function renderModalita(s) {
+  const paper = s.modalita === 'paper';
+  const nota = $('keys-paper');
+  nota.textContent = paper
+    ? 'In modalità paper le chiavi non servono: il bot legge i prezzi pubblici del '
+      + 'mercato vero e simula le esecuzioni. Nessun ordine esce dal computer. '
+      + 'Servono solo se passi a testnet.'
+    : '';
+  $('step-keys').classList.toggle('done', paper);
+}
+
+function renderAttivita(s) {
+  const a = s.attivita;
+  if (!a) return;
+  $('attivita-stato').textContent = a.stato.charAt(0).toUpperCase() + a.stato.slice(1) + '.';
+  let spiega = a.spiegazione || '';
+  if (a.eta_dato_s !== null && a.eta_dato_s !== undefined) {
+    spiega += ' Ultimo dato di mercato ' + Math.round(a.eta_dato_s) + ' secondi fa.';
+  }
+  if (a.ultimo_motivo) {
+    spiega += ' Ultima decisione: ' + a.ultimo_motivo + '.';
+  }
+  $('attivita-spiegazione').textContent = spiega;
+  const righe = (a.simboli || []).map(function (x) {
+    const quota = Math.min(100, Math.round(100 * x.barre / Math.max(1, x.barre_necessarie)));
+    return '<tr><td>' + esc(x.simbolo) + '</td>'
+      + '<td>' + x.barre + ' / ' + x.barre_necessarie + ' candele (' + quota + '%)</td>'
+      + '<td>' + (x.pronto ? 'pronto' : 'in raccolta') + '</td>'
+      + '<td>' + (x.ultimo_prezzo ? fmt(x.ultimo_prezzo) : '—') + '</td></tr>';
+  }).join('');
+  $('attivita-simboli').innerHTML = righe
+    ? '<table><thead><tr><th>Coppia</th><th>Dati per decidere</th><th>Stato</th><th>Ultimo prezzo</th></tr></thead><tbody>' + righe + '</tbody></table>'
+    : '';
+}
+
+function renderTiles(s) {
+  const pnl = Number(s.pnl_realizzato) + Number(s.pnl_non_realizzato);
+  const killLabel = s.killswitch.scattato
+    ? '&#9888; fermo'
+    : (s.in_esecuzione ? '&#10003; attivo' : '&#9675; in attesa');
+  $('tiles').innerHTML = [
+    tile('Capitale', fmt(s.equity) + ' ' + s.valuta,
+         'liquido ' + fmt(s.cash) + ' ' + s.valuta),
+    tile('Guadagno', (pnl >= 0 ? '+' : '') + fmt(pnl) + ' ' + s.valuta,
+         'commissioni ' + fmt(s.commissioni, 4), pnl > 0 ? 'pos' : (pnl < 0 ? 'neg' : '')),
+    tile('Perdita oggi', pct(s.drawdown_giornaliero),
+         'limite ' + pct(settingsCache.drawdown_giornaliero ?? 0.03, 0),
+         s.drawdown_giornaliero > 0 ? 'neg' : ''),
+    tile('Posizioni', String((s.posizioni || []).length),
+         'massimo ' + (settingsCache.posizioni_massime ?? '—')),
+    tile('Perdite di fila', String(s.perdite_consecutive),
+         'limite ' + (settingsCache.perdite_consecutive ?? '—'),
+         s.perdite_consecutive > 0 ? 'neg' : ''),
+    tile('Protezione', killLabel,
+         s.killswitch.scattato ? esc((s.killswitch.motivo || '').slice(0, 60)) : 'kill switch',
+         s.killswitch.scattato ? 'neg' : ''),
+  ].join('');
+}
+
+function renderPositions(s) {
+  const rows = s.posizioni || [];
+  if (!rows.length) {
+    $('positions').innerHTML = '<p class="small muted">Nessuna posizione aperta.</p>';
+    return;
+  }
+  $('positions').innerHTML = `<table><thead><tr>
+      <th>Simbolo</th><th class="num">Quantità</th><th class="num">Prezzo di carico</th>
+      <th class="num">Prezzo ora</th><th class="num">Valore</th><th class="num">P&amp;L</th>
+    </tr></thead><tbody>` + rows.map((p) => {
+      const value = Number(p.pnl);
+      return `<tr><td>${esc(p.simbolo)}</td>
+        <td class="num">${esc(p.quantita)}</td>
+        <td class="num">${fmt(p.prezzo_carico)}</td>
+        <td class="num">${fmt(p.prezzo_corrente)}</td>
+        <td class="num">${fmt(p.valore)}</td>
+        <td class="num ${value > 0 ? 'pos' : (value < 0 ? 'neg' : '')}">${fmt(p.pnl, 4)}</td>
+      </tr>`;
+    }).join('') + '</tbody></table>';
+}
+
+/* ───────────────── grafico del capitale ─────────────────
+   Una sola serie: nessuna legenda, il titolo la nomina. Ultimo valore
+   etichettato direttamente, griglia recessiva, crosshair al passaggio. */
+
+const CHART = { w: 720, h: 240, left: 56, right: 58, top: 16, bottom: 28 };
+
+function renderChart(points) {
+  const svg = $('chart');
+  const note = $('chart-note');
+  const empty = $('chart-empty');
+  if (points.length < 2) {
+    svg.innerHTML = '';
+    svg.classList.add('hidden');
+    empty.classList.remove('hidden');
+    note.textContent = state && state.in_esecuzione
+      ? 'La linea si muove quando un\'operazione si chiude. Finché il bot non compra '
+        + 'e rivende resta ferma, anche se sta lavorando: il riquadro «Cosa sta '
+        + 'succedendo» dice a che punto è.'
+      : 'Il grafico si riempie mentre il bot gira.';
+    return;
+  }
+  svg.classList.remove('hidden');
+  empty.classList.add('hidden');
+  note.textContent =
+    `${points.length} rilevazioni, da ${clock(points[0].t)} a ${clock(points.at(-1).t)}.`;
+
+  const values = points.map((p) => Number(p.v));
+  const xMin = points[0].t, xMax = points.at(-1).t;
+  let yMin = Math.min(...values), yMax = Math.max(...values);
+  const pad = (yMax - yMin) * 0.12 || Math.max(Math.abs(yMax) * 0.002, 0.01);
+  yMin -= pad; yMax += pad;
+
+  const plotW = CHART.w - CHART.left - CHART.right;
+  const plotH = CHART.h - CHART.top - CHART.bottom;
+  const X = (t) => CHART.left + (xMax === xMin ? plotW : ((t - xMin) / (xMax - xMin)) * plotW);
+  const Y = (v) => CHART.top + plotH - ((v - yMin) / (yMax - yMin || 1)) * plotH;
+
+  const ticks = 4;
+  let grid = '';
+  for (let i = 0; i <= ticks; i++) {
+    const value = yMin + ((yMax - yMin) * i) / ticks;
+    const y = Y(value);
+    grid += `<line x1="${CHART.left}" x2="${CHART.left + plotW}" y1="${y}" y2="${y}"
+             stroke="var(--grid)" stroke-width="1"/>
+             <text x="${CHART.left - 8}" y="${y + 4}" text-anchor="end" font-size="11"
+             fill="var(--muted)" style="font-variant-numeric:tabular-nums">${fmt(value)}</text>`;
+  }
+
+  const line = points.map((p, i) => `${i ? 'L' : 'M'}${X(p.t).toFixed(1)},${Y(Number(p.v)).toFixed(1)}`).join('');
+  const last = points.at(-1);
+  const lastX = X(last.t), lastY = Y(Number(last.v));
+  const first = Number(points[0].v);
+  const change = Number(last.v) - first;
+
+  svg.innerHTML = `
+    ${grid}
+    <line x1="${CHART.left}" x2="${CHART.left + plotW}" y1="${CHART.top + plotH}"
+          y2="${CHART.top + plotH}" stroke="var(--axis)" stroke-width="1"/>
+    <text x="${CHART.left}" y="${CHART.h - 8}" font-size="11" fill="var(--muted)">${clock(xMin)}</text>
+    <text x="${CHART.left + plotW}" y="${CHART.h - 8}" font-size="11" fill="var(--muted)"
+          text-anchor="end">${clock(xMax)}</text>
+    <path d="${line}" fill="none" stroke="var(--series-1)" stroke-width="2"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${lastX}" cy="${lastY}" r="4" fill="var(--series-1)"
+            stroke="var(--surface-1)" stroke-width="2"/>
+    <text x="${Math.min(lastX + 10, CHART.w - 4)}" y="${lastY + 4}" font-size="12"
+          font-weight="600" fill="var(--text-primary)"
+          style="font-variant-numeric:tabular-nums">${fmt(last.v)}</text>
+    <text x="${Math.min(lastX + 10, CHART.w - 4)}" y="${lastY + 19}" font-size="11"
+          fill="${change >= 0 ? 'var(--good-text)' : 'var(--critical)'}"
+          style="font-variant-numeric:tabular-nums">${change >= 0 ? '+' : ''}${fmt(change, 2)}</text>
+    <line id="crosshair" x1="0" x2="0" y1="${CHART.top}" y2="${CHART.top + plotH}"
+          stroke="var(--axis)" stroke-width="1" opacity="0"/>
+    <circle id="hoverdot" r="4" fill="var(--series-1)" stroke="var(--surface-1)"
+            stroke-width="2" opacity="0"/>
+    <rect x="${CHART.left}" y="${CHART.top}" width="${plotW}" height="${plotH}"
+          fill="transparent" id="hitarea"/>`;
+
+  const hit = svg.querySelector('#hitarea');
+  const crosshair = svg.querySelector('#crosshair');
+  const dot = svg.querySelector('#hoverdot');
+  const tooltip = $('tooltip');
+
+  const move = (event) => {
+    const box = svg.getBoundingClientRect();
+    const scale = CHART.w / box.width;
+    const cx = (event.clientX - box.left) * scale;
+    let nearest = points[0], best = Infinity;
+    for (const p of points) {
+      const distance = Math.abs(X(p.t) - cx);
+      if (distance < best) { best = distance; nearest = p; }
+    }
+    const px = X(nearest.t), py = Y(Number(nearest.v));
+    crosshair.setAttribute('x1', px); crosshair.setAttribute('x2', px);
+    crosshair.setAttribute('opacity', '1');
+    dot.setAttribute('cx', px); dot.setAttribute('cy', py); dot.setAttribute('opacity', '1');
+    tooltip.innerHTML = `<strong>${fmt(nearest.v)}</strong><br>${stamp(nearest.t)}`;
+    tooltip.style.opacity = '1';
+    tooltip.style.left = Math.min(px / scale + 12, box.width - 150) + 'px';
+    tooltip.style.top = Math.max(py / scale - 10, 0) + 'px';
+  };
+  const leave = () => {
+    crosshair.setAttribute('opacity', '0');
+    dot.setAttribute('opacity', '0');
+    tooltip.style.opacity = '0';
+  };
+  hit.addEventListener('mousemove', move);
+  hit.addEventListener('pointermove', move);
+  hit.addEventListener('mouseleave', leave);
+  hit.addEventListener('pointerleave', leave);
+
+  renderChartTable(points);
+  syncTableButton(points);
+}
+
+function renderChartTable(points) {
+  const sample = points.slice(-40).reverse();
+  $('chart-table').innerHTML = `<table><thead><tr><th>Istante</th>
+    <th class="num">Capitale</th></tr></thead><tbody>` +
+    sample.map((p) => `<tr><td>${stamp(p.t)}</td><td class="num">${fmt(p.v)}</td></tr>`).join('') +
+    '</tbody></table>';
+}
+
+function syncTableButton(points) {
+  $('btn-table').disabled = points.length < 2;
+}
+
+$('btn-table').onclick = () => {
+  const table = $('chart-table');
+  const visible = !table.classList.contains('hidden');
+  table.classList.toggle('hidden', visible);
+  $('btn-table').textContent = visible ? 'Mostra i dati' : 'Nascondi i dati';
+};
+
+/* ───────────────── decisioni ───────────────── */
+
+function renderDecisions() {
+  const filter = $('filter-decisions').value;
+  const rows = decisions.filter((d) =>
+    filter === 'tutte' || (filter === 'approvate' ? d.approvata : !d.approvata));
+  $('decisions-count').textContent =
+    `${rows.length} mostrate su ${decisions.length} più recenti`;
+
+  if (!rows.length) {
+    $('decisions').innerHTML =
+      '<p class="small muted">Nessuna decisione ancora. Compaiono quando il bot gira.</p>';
+    return;
+  }
+  $('decisions').innerHTML = rows.map((d) => {
+    const verdict = d.approvata
+      ? '<span class="badge good"><span class="dot"></span>ordine</span>'
+      : '<span class="badge"><span class="dot"></span>niente</span>';
+    const summary = d.approvata
+      ? `comprato ${esc(d.quantita)}`
+      : esc((d.motivi[0] || '').slice(0, 90));
+    const features = Object.entries(d.feature || {})
+      .map(([k, v]) => `<span class="chip">${esc(k)}: ${Number(v).toFixed(4)}</span>`).join('');
+    const reasons = (d.motivi || [])
+      .map((r) => `<li class="reason">${esc(r)}</li>`).join('');
+    return `<details class="decision"><summary>
+        <span class="muted">${clock(d.ts_ms)}</span>
+        <span>${esc(d.simbolo)}</span>
+        <span class="reason">${summary}</span>
+        ${verdict}
+      </summary><div class="body">
+        <h3>Perché</h3>
+        ${reasons ? `<ul style="margin:0 0 10px 18px">${reasons}</ul>`
+                  : '<p class="small muted">Tutti i controlli superati.</p>'}
+        <h3>Numeri che l'hanno generata</h3>
+        <div class="chips">${features || '<span class="muted small">nessuna feature</span>'}</div>
+      </div></details>`;
+  }).join('');
+}
+
+$('filter-decisions').onchange = renderDecisions;
+
+/* ───────────────── impostazioni ───────────────── */
+
+const SETTINGS_FIELDS = [
+  ['capitale', 'Capitale che il bot può usare', 'number', 1],
+  ['ordine_target', 'Valore di un ordine', 'number', 0.1],
+  ['ordine_massimo', 'Ordine massimo', 'number', 0.1],
+  ['posizioni_massime', 'Posizioni aperte al massimo', 'number', 1],
+  ['esposizione_massima', 'Esposizione massima totale', 'number', 1],
+  ['drawdown_giornaliero', 'Stop se perdo in giornata', 'number', 0.005],
+  ['drawdown_totale', 'Stop se perdo in totale', 'number', 0.005],
+  ['perdite_consecutive', 'Stop dopo N perdite di fila', 'number', 1],
+  ['probabilita_minima', 'Probabilità minima per operare', 'number', 0.01],
+  ['edge_minimo_bps', 'Vantaggio minimo dopo i costi', 'number', 0.5],
+];
+
+let settingsCache = {};
+
+function readSetting(raw, path) {
+  return path.reduce((node, key) => (node == null ? undefined : node[key]), raw);
+}
+
+const SETTING_PATHS = {
+  capitale: ['capital_quote'],
+  ordine_target: ['risk', 'sizing', 'target_order_quote'],
+  ordine_massimo: ['risk', 'sizing', 'max_order_quote'],
+  posizioni_massime: ['risk', 'limits', 'max_open_positions'],
+  esposizione_massima: ['risk', 'limits', 'max_gross_exposure_quote'],
+  drawdown_giornaliero: ['risk', 'killswitch', 'max_daily_drawdown_pct'],
+  drawdown_totale: ['risk', 'killswitch', 'max_total_drawdown_pct'],
+  perdite_consecutive: ['risk', 'killswitch', 'max_consecutive_losses'],
+  probabilita_minima: ['signals', 'min_probability'],
+  edge_minimo_bps: ['signals', 'min_expected_edge_bps'],
+};
+
+async function loadSettings() {
+  const payload = await api('/api/config');
+  settingsCache = {};
+  for (const [key, path] of Object.entries(SETTING_PATHS)) {
+    settingsCache[key] = readSetting(payload.grezza, path);
+  }
+  $('settings').innerHTML = SETTINGS_FIELDS.map(([key, label, type, step]) =>
+    `<div><label for="set-${key}">${label}${infoButton(key)}</label>
+     <input type="${type}" step="${step}" id="set-${key}" value="${settingsCache[key]}"></div>`
+  ).join('');
+}
+
+$('btn-save-settings').onclick = async () => {
+  const changes = {};
+  for (const [key] of SETTINGS_FIELDS) {
+    const raw = $('set-' + key).value;
+    changes[key] = raw.includes('.') ? Number(raw) : parseInt(raw, 10);
+  }
+  try {
+    const risposta = await post('/api/config', changes);
+    note('msg-settings',
+         (risposta && risposta.avviso) ? risposta.avviso : 'Impostazioni salvate.',
+         (risposta && risposta.avviso) ? 'warn' : 'ok');
+    await loadSettings();
+    await refreshCapitale();
+  } catch (error) {
+    note('msg-settings', error.message, 'err');
+  }
+};
+
+/* ───────────────── azioni ───────────────── */
+
+$('btn-save-keys').onclick = async () => {
+  const api_key = $('api-key').value.trim();
+  const api_secret = $('api-secret').value.trim();
+  if (!api_key || !api_secret) {
+    note('msg-keys', 'Inserisci sia la chiave sia il segreto.', 'err');
+    return;
+  }
+  note('msg-keys', 'Salvataggio e verifica in corso…');
+  try {
+    const salvataggio = await post('/api/credenziali', { api_key, api_secret });
+    const check = await post('/api/test-connessione');
+    const balances = Object.entries(check.saldi || {})
+      .map(([asset, amount]) => `${asset} ${fmt(amount, 2)}`).join(', ') || 'nessun saldo';
+    const others = check.altri_asset
+      ? ` (più altri ${check.altri_asset} asset di prova, che il bot non usa)` : '';
+    const avviso = salvataggio.avviso ? ` ⚠ ${salvataggio.avviso}` : '';
+    note('msg-keys',
+         `Connessione riuscita. Saldi utili: ${balances}${others}.${avviso}`,
+         salvataggio.avviso ? 'warn' : 'ok');
+    $('api-key').value = ''; $('api-secret').value = '';
+    await refresh();
+  } catch (error) {
+    note('msg-keys', error.message, 'err');
+  }
+};
+
+$('btn-fetch').onclick = async () => {
+  try {
+    await post('/api/scarica-dati', {
+      giorni: Number($('days').value),
+      ore_flusso: Number($('flow-hours').value),
+    });
+    note('msg-data', 'Scarico in corso…');
+    pollJob('msg-data');
+  } catch (error) { note('msg-data', error.message, 'err'); }
+};
+
+$('btn-esperimenti').onclick = async () => {
+  try {
+    await post('/api/esperimenti');
+    note('msg-esperimenti', 'Misura in corso: richiede qualche minuto…');
+    pollJob('msg-esperimenti', renderEsperimenti);
+  } catch (error) { note('msg-esperimenti', error.message, 'err'); }
+};
+
+function renderEsperimenti(risultato) {
+  const box = $('esperimenti-result');
+  box.classList.remove('hidden');
+  if (!risultato || !risultato.esperimenti) { box.innerHTML = ''; return; }
+  const righe = risultato.esperimenti.map(function (e) {
+    const classe = e.promosso ? 'pos' : '';
+    return '<tr><td><strong>' + esc(e.candidato) + '</strong><br>'
+      + '<span class="small muted">' + esc(e.motivo) + '</span></td>'
+      + '<td>' + e.finestre_in_profitto + ' / ' + e.finestre_valutate + '</td>'
+      + '<td>' + e.operazioni + '</td>'
+      + '<td>' + (e.rendimento_medio === null ? '—'
+          : ((e.rendimento_medio >= 0 ? '+' : '') + (100 * e.rendimento_medio).toFixed(2) + '%')) + '</td>'
+      + '<td class="' + classe + '">' + (e.promosso ? 'regge' : 'scartata') + '</td></tr>'
+      + '<tr><td colspan="5" class="small muted">' + esc(e.motivo_decisione || '') + '</td></tr>';
+  }).join('');
+  box.innerHTML = '<div class="scroll"><table><thead><tr>'
+    + '<th>Variante</th><th>Finestre in profitto</th><th>Operazioni</th>'
+    + '<th>Rendimento medio</th><th>Esito</th></tr></thead><tbody>'
+    + righe + '</tbody></table></div>'
+    + '<p class="small muted">' + esc(risultato.nota || '') + '</p>';
+}
+
+$('btn-frequenza').onclick = async () => {
+  try {
+    await post('/api/frequenza');
+    note('msg-frequenza', 'Misura in corso…');
+    pollJob('msg-frequenza', renderFrequenza);
+  } catch (error) { note('msg-frequenza', error.message, 'err'); }
+};
+
+function renderCoppie(risultato) {
+  const righe = (risultato.coppie || []).map(function (p) {
+    const classe = p.operazioni > 0 ? 'pos' : '';
+    return '<tr><td><strong>' + esc(p.simbolo) + '</strong></td>'
+      + '<td>' + esc(p.orizzonte) + '</td>'
+      + '<td class="' + classe + '">' + p.operazioni_al_giorno.toLocaleString('it-IT') + '</td>'
+      + '<td>' + p.operazioni + '</td>'
+      + '<td>' + (p.rendimento >= 0 ? '+' : '') + (100 * p.rendimento).toFixed(2) + '%</td>'
+      + '<td>' + esc(p.esito) + '</td></tr>';
+  }).join('');
+  if (!righe) return '';
+  const senzaDati = (risultato.coppie_senza_dati || []).length
+    ? '<p class="small muted">Senza dati, non misurate: '
+      + esc(risultato.coppie_senza_dati.join(', '))
+      + '. Scaricale al passo 2 (le coppie spente vengono scaricate comunque).</p>'
+    : '';
+  return '<p class="small muted" style="margin-top:14px"><strong>La stessa impostazione, '
+    + 'coppia per coppia.</strong> Il costo di un giro è identico su tutte; il movimento '
+    + 'atteso no. Una coppia che si muove di più supera la riga dei costi più spesso, '
+    + 'senza toccare nessuna protezione. Qui sono misurate una per volta.</p>'
+    + '<div class="scroll"><table><thead><tr><th>Coppia</th><th>Durata barra</th>'
+    + '<th>Operazioni al giorno</th><th>Operazioni</th><th>Risultato</th><th>Esito</th>'
+    + '</tr></thead><tbody>' + righe + '</tbody></table></div>' + senzaDati;
+}
+
+function renderFrequenza(risultato) {
+  const box = $('frequenza-result');
+  box.classList.remove('hidden');
+  if (!risultato || !risultato.profili) { box.innerHTML = ''; return; }
+  const righe = risultato.profili.map(function (p) {
+    const esitoClasse = p.esito === 'positivo' ? 'pos' : (p.esito === 'negativo' ? 'neg' : '');
+    return '<tr>'
+      + '<td><strong>' + esc(p.profilo) + '</strong><br><span class="small muted">'
+      + esc(p.descrizione) + '</span></td>'
+      + '<td>' + p.operazioni_al_giorno.toLocaleString('it-IT') + '</td>'
+      + '<td>' + p.operazioni + '</td>'
+      + '<td class="' + esitoClasse + '">' + (p.rendimento >= 0 ? '+' : '')
+      + (100 * p.rendimento).toFixed(2) + '%</td>'
+      + '<td>' + fmt(p.commissioni, 2) + '</td>'
+      + '<td>' + p.costo_giornaliero_pct.toFixed(2) + '%</td>'
+      + '<td class="' + esitoClasse + '">' + esc(p.esito) + '</td>'
+      + '</tr>'
+      + '<tr><td colspan="7" class="small muted">Cosa le ferma: '
+      + esc(p.vincolo_principale || 'niente, operano tutte') + '</td></tr>';
+  }).join('');
+  const orizzonti = (risultato.orizzonti || []).map(function (p) {
+    const esitoClasse = p.esito === 'positivo' ? 'pos' : (p.esito === 'negativo' ? 'neg' : '');
+    return '<tr><td><strong>' + esc(p.orizzonte) + '</strong></td>'
+      + '<td>' + p.operazioni_al_giorno.toLocaleString('it-IT') + '</td>'
+      + '<td>' + p.operazioni + '</td>'
+      + '<td class="' + esitoClasse + '">' + (p.rendimento >= 0 ? '+' : '')
+      + (100 * p.rendimento).toFixed(2) + '%</td>'
+      + '<td class="' + esitoClasse + '">' + esc(p.esito) + '</td></tr>';
+  }).join('');
+  box.innerHTML = '<div class="scroll"><table><thead><tr>'
+    + '<th>Impostazione</th><th>Operazioni al giorno</th><th>Operazioni totali</th>'
+    + '<th>Risultato</th><th>Commissioni</th><th>Costo al giorno</th><th>Esito</th>'
+    + '</tr></thead><tbody>' + righe + '</tbody></table></div>'
+    + (orizzonti
+        ? '<p class="small muted" style="margin-top:14px"><strong>Stessa impostazione, '
+          + 'barre più lunghe.</strong> Su barre da un minuto il movimento atteso è '
+          + 'piccolo rispetto ai costi; allungando la barra cresce il movimento e il '
+          + 'costo resta lo stesso.</p>'
+          + '<div class="scroll"><table><thead><tr><th>Durata della barra</th>'
+          + '<th>Operazioni al giorno</th><th>Operazioni totali</th><th>Risultato</th>'
+          + '<th>Esito</th></tr></thead><tbody>' + orizzonti + '</tbody></table></div>'
+        : '')
+    + renderCoppie(risultato)
+    + ((risultato.orizzonti_saltati || []).length
+        ? '<p class="small muted">Non misurati per dati insufficienti: '
+          + esc(risultato.orizzonti_saltati.join(', ')) + '. Scarica più giorni al passo 2.</p>'
+        : '')
+    + '<p class="small muted">' + esc(risultato.nota || '') + '</p>'
+    + (risultato.con_flusso_ordini ? ''
+       : '<p class="small muted">Misura fatta senza flusso ordini: scaricalo al passo 2 '
+         + 'per una stima più vicina al vero.</p>');
+}
+
+$('btn-backtest').onclick = async () => {
+  try {
+    await post('/api/backtest');
+    note('msg-backtest', 'Prova in corso…');
+    pollJob('msg-backtest', renderBacktest);
+  } catch (error) { note('msg-backtest', error.message, 'err'); }
+};
+
+async function pollJob(target, onDone) {
+  const timer = setInterval(async () => {
+    try {
+      const { lavoro } = await api('/api/lavoro');
+      if (!lavoro) { clearInterval(timer); return; }
+      if (lavoro.stato === 'in corso') {
+        note(target, `${lavoro.nome}: in corso da ${lavoro.secondi}s…`);
+        return;
+      }
+      clearInterval(timer);
+      // Un lavoro riuscito che riporta un esito negativo non va mostrato in
+      // verde: l'operazione e' andata a buon fine, il risultato no.
+      let kind = 'err';
+      if (lavoro.stato === 'completato') {
+        const esito = lavoro.risultato && lavoro.risultato.verdetto
+          && lavoro.risultato.verdetto.esito;
+        kind = esito === 'positivo' ? 'ok' : (esito === 'negativo' ? 'warn' : '');
+      }
+      note(target, lavoro.messaggio, kind);
+      if (lavoro.stato === 'completato' && onDone) onDone(lavoro.risultato);
+      refresh();
+    } catch (error) { clearInterval(timer); note(target, error.message, 'err'); }
+  }, 1200);
+}
+
+function renderBacktest(r) {
+  if (!r || !Object.keys(r).length) return;
+  const box = $('backtest-result');
+  box.classList.remove('hidden');
+  const periodo = r.periodo
+    ? `<p class="small muted" style="margin:0 0 8px">Periodo analizzato:
+       <strong>${esc(r.periodo.da)} – ${esc(r.periodo.a)}</strong>
+       (${esc(r.periodo.nota)}).</p>`
+    : '';
+  const esito = (r.verdetto && r.verdetto.esito) || (r.regge_i_costi ? 'positivo' : 'negativo');
+  const VERDETTI = {
+    positivo: ['ok', '&#10003;',
+      'La strategia regge i costi su questi dati. Il passo successivo è ripetere ' +
+      'la prova su finestre diverse prima di fidarsi.'],
+    negativo: ['warn', '&#9888;',
+      'La strategia <strong>non</strong> regge i costi su questi dati. Farla girare ' +
+      'adesso significherebbe perdere denaro lentamente, anche in testnet.'],
+    insufficiente: ['', '&#8505;',
+      'Dati insufficienti per dire se funziona: <strong>non è una bocciatura</strong>, ' +
+      'è un campione troppo piccolo. Servono più operazioni, quindi più storico ' +
+      'oppure più giorni di raccolta dal vivo.'],
+  };
+  const [classe, icona, testo] = VERDETTI[esito] || VERDETTI.negativo;
+  // La spiegazione puntuale e' gia' nella riga di stato sopra: ripeterla qui
+  // raddoppierebbe il testo senza aggiungere nulla.
+  const verdict = `<div class="msg ${classe}">${icona} ${testo}</div>`;
+  const reasons = (r.motivi_rifiuto || []).map((m) =>
+    `<tr><td>${esc(m.esempio)}</td><td class="num">${m.volte.toLocaleString('it-IT')}</td></tr>`
+  ).join('');
+  box.innerHTML = periodo + verdict + `
+    <div class="tiles" style="margin-top:12px">
+      ${tile('Operazioni', String(r.operazioni),
+             `${r.ordini} ordini, ${r.rifiuti} rifiuti` +
+             (r.non_eseguiti ? `, ${r.non_eseguiti} non eseguibili` : ''))}
+      ${tile('Rendimento', pct(r.rendimento), `${fmt(r.equity_iniziale)} → ${fmt(r.equity_finale)}`,
+             r.rendimento > 0 ? 'pos' : (r.rendimento < 0 ? 'neg' : ''))}
+      ${tile('Perdita massima', pct(r.max_drawdown), 'dal picco')}
+      ${tile('Commissioni', fmt(r.commissioni, 4), 'pagate in totale')}
+    </div>
+    ${reasons ? `<h3 style="margin-top:14px">Perché il bot non ha operato</h3>
+      <p class="small muted" style="margin:4px 0 8px">Un esempio per tipo, con quante
+      volte è successo.</p>
+      <div class="scroll"><table><thead><tr><th>Motivo</th>
+      <th class="num">Volte</th></tr></thead><tbody>${reasons}</tbody></table></div>` : ''}
+    ${renderScenari(r.scenari)}`;
+}
+
+function renderScenari(sc) {
+  if (!sc) return '';
+  if (!sc.affidabile) {
+    return '<h3 style="margin-top:14px">Scenari possibili</h3>'
+      + '<p class="small muted">' + esc(sc.spiegazione) + '</p>';
+  }
+  const p = sc.percentili;
+  const stop = sc.probabilita_stop === null || sc.probabilita_stop === undefined
+    ? '—'
+    : pct(sc.probabilita_stop);
+  return '<h3 style="margin-top:14px">Scenari possibili</h3>'
+    + '<p class="small muted" style="margin:4px 0 8px">Il backtest racconta la storia '
+    + 'capitata. Qui le operazioni osservate vengono rimescolate a blocchi (per non '
+    + 'spezzare le serie di perdite) in ' + sc.percorsi + ' storie diverse da '
+    + sc.orizzonte + ' operazioni ciascuna.</p>'
+    + '<div class="tiles">'
+    + tile('Caso tipico', pct(p.p50), 'metà degli scenari sta sopra',
+           p.p50 > 0 ? 'pos' : (p.p50 < 0 ? 'neg' : ''))
+    + tile('Scenario brutto', pct(p.p05), 'peggio di così solo 1 volta su 20',
+           p.p05 < 0 ? 'neg' : '')
+    + tile('Scenario buono', pct(p.p95), 'meglio di così solo 1 volta su 20',
+           p.p95 > 0 ? 'pos' : '')
+    + tile('Finisce in perdita', pct(sc.probabilita_perdita), 'quota di scenari',
+           sc.probabilita_perdita > 0.5 ? 'neg' : '')
+    + tile('Il bot si ferma', stop, 'tocca il limite di perdita')
+    + tile('Calo peggiore tipico', pct(sc.calo_massimo.p50),
+           'nel caso brutto ' + pct(sc.calo_massimo.p95))
+    + '</div>'
+    + '<p class="small muted">' + esc(sc.spiegazione) + '</p>';
+}
+
+$('btn-start').onclick = async () => {
+  busy = true; showError('');
+  try { await post('/api/avvia'); }
+  catch (error) { showError(error.message); }
+  finally { busy = false; refresh(); }
+};
+
+$('btn-stop').onclick = async () => {
+  try { await post('/api/ferma'); } catch (error) { showError(error.message); }
+  refresh();
+};
+
+$('btn-flatten').onclick = async () => {
+  if (!confirm('Chiudere subito tutte le posizioni a prezzo di mercato?')) return;
+  try { await post('/api/chiudi-tutto'); } catch (error) { showError(error.message); }
+  refresh();
+};
+
+/* ───────────────── aggiornamento periodico ───────────────── */
+
+async function refresh() {
+  try {
+    state = await api('/api/stato');
+    showError(state.ultimo_errore || '');
+    renderHeader(state);
+    renderModalita(state);
+    renderAttivita(state);
+    renderTiles(state);
+    renderPositions(state);
+    if (state.dati) {
+      const total = state.dati.totale || 0;
+      $('step-data').classList.toggle('done', total > 0);
+      if (total && !$('msg-data').textContent) {
+        note('msg-data', `${total.toLocaleString('it-IT')} candele già salvate.`, 'ok');
+      }
+    }
+  } catch (error) {
+    showError('Pannello scollegato dal bot: ' + error.message);
+  }
+}
+
+async function refreshSlow() {
+  if (!state || !state.in_esecuzione) return;
+  try {
+    const [eq, dec] = await Promise.all([api('/api/equity'), api('/api/decisioni?limite=100')]);
+    equityPoints = eq.punti || [];
+    decisions = dec.decisioni || [];
+    renderChart(equityPoints);
+    renderDecisions();
+  } catch (_) { /* il prossimo giro riprova */ }
+}
+
+(async function init() {
+  await loadSettings();
+  renderChart([]);
+  renderDecisions();
+  await refresh();
+  await refreshCapitale();
+  await refreshPrezzi();
+  await refreshSlow();
+  $('btn-movimento').addEventListener('click', registraMovimento);
+  setInterval(refresh, 2000);
+  setInterval(refreshSlow, 5000);
+  setInterval(refreshCapitale, 10000);
+  setInterval(refreshPrezzi, 4000);
+})();
+</script>
+</body>
+</html>

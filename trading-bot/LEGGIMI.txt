@@ -1,0 +1,82 @@
+BOT TRADING — come si avvia (Windows)
+=====================================
+
+1. Fai doppio clic su:  avvia.bat
+
+   Si apre una finestra nera: e' normale, e' il bot che parte.
+   La prima volta impiega un minuto a prepararsi, le volte dopo e' immediato.
+
+2. Si apre da solo il browser sul pannello di controllo.
+   Se non si apre, vai a mano su:  http://127.0.0.1:8777
+
+3. IL BOT PARTE GIA' IN MODALITA' "PAPER"
+
+   Paper vuol dire: prezzi veri del mercato vero, ordini simulati dentro il
+   tuo computer. Non servono chiavi, non serve un conto, non si rischia
+   niente. Premi "Avvia il bot" e lo vedi lavorare.
+
+   Per vederlo decidere subito, fai prima il passo 2 (scarica lo storico):
+   senza, deve raccogliere 240 candele da un minuto, cioe' quattro ore,
+   prima di poter valutare qualunque cosa.
+
+   Il passo 1 (chiavi) serve SOLO se passi a "testnet", dove gli ordini
+   vengono inviati davvero al conto di prova di Binance.
+
+4. Nel pannello segui i passi della sezione "Preparazione":
+
+   Passo 1 — Chiavi: SALTALO se resti in paper. Serve solo per testnet.
+
+   Passo 2 — Scarica lo storico dei prezzi (30 giorni) e qualche giorno di
+             flusso ordini. Senza, il bot aspetta ore prima di decidere e
+             la prova della strategia e' cieca su meta' di cio' che guarda.
+
+   Passo 3 — Prova la strategia: ti dice se regge le commissioni.
+
+   Passo 4 — Quanto spesso vuoi che operi: misura, sui tuoi dati, quante
+             operazioni farebbe ogni impostazione e quanto costerebbero.
+
+   Passo 5 — Prova varianti dei parametri: misura alcune varianti su
+             finestre temporali separate e dice quali reggono. Non cambia
+             niente da solo.
+
+5. Premi "Avvia il bot".
+
+
+UNA COSA CHE CONVIENE SAPERE SUBITO
+-----------------------------------
+Un giro completo (compra + rivendi) costa circa lo 0,22% fra commissioni
+e spread. Cento operazioni al giorno sono il 22% del valore scambiato,
+ogni giorno. Per questo il bot rifiuta le operazioni il cui guadagno
+atteso non copre quel costo: non e' prudenza eccessiva, e' che quelle
+operazioni perdono in media, e piu' se ne fanno piu' si perde.
+
+Il passo 4 ti mostra, sui tuoi dati, quante operazioni farebbe ogni
+impostazione e quanto costerebbero. La scelta e' tua, ma con i numeri.
+
+
+ALTRI STRUMENTI (da terminale, nella cartella del bot)
+------------------------------------------------------
+  python -m scripts.resistenza --ore 24
+      Prova di resistenza: simula ore di mercato con guasti (cadute,
+      riavvii, salti dell'orologio) e verifica che la contabilita' regga.
+
+  python -m scripts.addestra --orizzonte 15
+      Addestra il modello sui dati scaricati e misura se e' affidabile.
+      Non lo accende: stampa le righe di configurazione da cambiare.
+
+Per chiudere tutto: chiudi la finestra nera.
+
+
+SERVE PYTHON
+------------
+Se al doppio clic appare "Python non risulta installato":
+scaricalo da https://www.python.org/downloads/ e durante l'installazione
+metti la spunta su "Add python.exe to PATH". Poi riprova col doppio clic.
+
+
+DENARO VERO
+-----------
+Il pannello NON puo' passare a denaro reale: funziona solo sulla testnet,
+cioe' su denaro finto. Il passaggio a denaro vero richiede due modifiche
+fatte a mano, apposta perche' non succeda per sbaglio. E' spiegato nel
+file README.md.

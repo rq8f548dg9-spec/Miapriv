@@ -1,0 +1,645 @@
+"""Tipi di dominio condivisi da backtest, testnet e live.
+
+Regole di progetto applicate qui:
+
+* Tutti i prezzi e le quantita' sono ``Decimal``. I float introducono errori di
+  arrotondamento che un exchange rifiuta (LOT_SIZE / PRICE_FILTER) e che in un
+  backtest si accumulano silenziosamente.
+* Tutti gli istanti sono interi in millisecondi epoch UTC (``TimestampMs``).
+  Nessun ``datetime`` naive circola nel sistema.
+* Le strutture sono immutabili (``frozen=True``): lo stato evolve creando nuovi
+  oggetti, cosi' un record loggato non puo' essere mutato a posteriori.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
+from enum import StrEnum
+from typing import Any
+
+__all__ = [
+    "BookLevel",
+    "Candle",
+    "Decision",
+    "Fill",
+    "Order",
+    "OrderBookSnapshot",
+    "OrderStatus",
+    "OrderType",
+    "Position",
+    "Side",
+    "Signal",
+    "SignalDirection",
+    "TimeInForce",
+    "TimestampMs",
+    "Trade",
+    "datetime_to_ms",
+    "ms_to_datetime",
+]
+
+TimestampMs = int
+"""Millisecondi dall'epoch, UTC. Unita' di tempo unica del sistema."""
+
+
+def ms_to_datetime(ts_ms: TimestampMs) -> datetime:
+    """Converte un timestamp in ms epoch in un ``datetime`` aware UTC."""
+    return datetime.fromtimestamp(ts_ms / 1000.0, tz=UTC)
+
+
+def datetime_to_ms(dt: datetime) -> TimestampMs:
+    """Converte un ``datetime`` aware in ms epoch. Rifiuta i naive."""
+    if dt.tzinfo is None:
+        raise ValueError("datetime naive non ammesso: serve un tzinfo esplicito")
+    return int(dt.timestamp() * 1000)
+
+
+class Side(StrEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+    @property
+    def sign(self) -> int:
+        """+1 per BUY, -1 per SELL. Utile per la quantita' firmata."""
+        return 1 if self is Side.BUY else -1
+
+    @property
+    def opposite(self) -> Side:
+        return Side.SELL if self is Side.BUY else Side.BUY
+
+
+class OrderType(StrEnum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    LIMIT_MAKER = "LIMIT_MAKER"
+    STOP_LOSS_LIMIT = "STOP_LOSS_LIMIT"
+
+
+class TimeInForce(StrEnum):
+    GTC = "GTC"
+    IOC = "IOC"
+    FOK = "FOK"
+
+
+class OrderStatus(StrEnum):
+    """Stati di un ordine. ``LOCAL`` = creato ma non ancora accettato."""
+
+    LOCAL = "LOCAL"
+    PENDING_NEW = "PENDING_NEW"
+    NEW = "NEW"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    CANCELED = "CANCELED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in (
+            OrderStatus.FILLED,
+            OrderStatus.CANCELED,
+            OrderStatus.REJECTED,
+            OrderStatus.EXPIRED,
+        )
+
+    @property
+    def is_open(self) -> bool:
+        """Vero se l'ordine puo' ancora consumare margine sull'exchange."""
+        return not self.is_terminal and self is not OrderStatus.LOCAL
+
+
+class SignalDirection(StrEnum):
+    LONG = "LONG"
+    SHORT = "SHORT"
+    FLAT = "FLAT"
+
+    @property
+    def sign(self) -> int:
+        if self is SignalDirection.LONG:
+            return 1
+        if self is SignalDirection.SHORT:
+            return -1
+        return 0
+
+
+@dataclass(frozen=True, slots=True)
+class Candle:
+    """Barra OHLCV.
+
+    ``is_closed`` e' parte del contratto anti-look-ahead: una candela ancora
+    aperta contiene informazione del futuro rispetto al suo ``open_time_ms`` e
+    non puo' essere usata per decidere. Il feature engine lo verifica.
+    """
+
+    symbol: str
+    open_time_ms: TimestampMs
+    close_time_ms: TimestampMs
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal
+    quote_volume: Decimal
+    trades: int
+    is_closed: bool
+
+    def __post_init__(self) -> None:
+        if self.close_time_ms <= self.open_time_ms:
+            raise ValueError(
+                f"candela {self.symbol}: close_time {self.close_time_ms} "
+                f"non successivo a open_time {self.open_time_ms}"
+            )
+        if self.low > self.high:
+            raise ValueError(f"candela {self.symbol}: low {self.low} > high {self.high}")
+
+    @property
+    def decision_time_ms(self) -> TimestampMs:
+        """Primo istante in cui questa candela e' lecitamente osservabile.
+
+        Per una candela chiusa coincide con la sua chiusura: prima di allora il
+        suo contenuto non esiste ancora.
+        """
+        if not self.is_closed:
+            raise ValueError(
+                f"candela {self.symbol} @{self.open_time_ms} non chiusa: "
+                "non ha un istante di osservabilita'"
+            )
+        return self.close_time_ms
+
+    @property
+    def typical_price(self) -> Decimal:
+        return (self.high + self.low + self.close) / Decimal(3)
+
+
+@dataclass(frozen=True, slots=True)
+class Trade:
+    """Singola esecuzione pubblica dal feed aggTrade/trade."""
+
+    symbol: str
+    trade_id: int
+    price: Decimal
+    quantity: Decimal
+    ts_ms: TimestampMs
+    is_buyer_maker: bool
+
+    @property
+    def aggressor_side(self) -> Side:
+        """Lato che ha consumato liquidita'. Base dell'order flow imbalance."""
+        return Side.SELL if self.is_buyer_maker else Side.BUY
+
+    @property
+    def notional(self) -> Decimal:
+        return self.price * self.quantity
+
+
+@dataclass(frozen=True, slots=True)
+class BookLevel:
+    price: Decimal
+    quantity: Decimal
+
+    @property
+    def notional(self) -> Decimal:
+        return self.price * self.quantity
+
+
+@dataclass(frozen=True, slots=True)
+class OrderBookSnapshot:
+    """Book L2 a un istante. ``bids`` decrescente, ``asks`` crescente."""
+
+    symbol: str
+    last_update_id: int
+    bids: tuple[BookLevel, ...]
+    asks: tuple[BookLevel, ...]
+    ts_ms: TimestampMs
+
+    @property
+    def best_bid(self) -> BookLevel | None:
+        return self.bids[0] if self.bids else None
+
+    @property
+    def best_ask(self) -> BookLevel | None:
+        return self.asks[0] if self.asks else None
+
+    @property
+    def mid_price(self) -> Decimal | None:
+        bid, ask = self.best_bid, self.best_ask
+        if bid is None or ask is None:
+            return None
+        return (bid.price + ask.price) / Decimal(2)
+
+    @property
+    def spread(self) -> Decimal | None:
+        bid, ask = self.best_bid, self.best_ask
+        if bid is None or ask is None:
+            return None
+        return ask.price - bid.price
+
+    @property
+    def microprice(self) -> Decimal | None:
+        """Mid pesato per il volume al top: stima migliore del fair value."""
+        bid, ask = self.best_bid, self.best_ask
+        if bid is None or ask is None:
+            return None
+        total = bid.quantity + ask.quantity
+        if total == 0:
+            return self.mid_price
+        return (ask.price * bid.quantity + bid.price * ask.quantity) / total
+
+    def is_crossed(self) -> bool:
+        bid, ask = self.best_bid, self.best_ask
+        return bid is not None and ask is not None and bid.price >= ask.price
+
+
+@dataclass(frozen=True, slots=True)
+class Signal:
+    """Output di un ``SignalGenerator``.
+
+    ``probability`` e' la probabilita' CALIBRATA che la direzione indicata
+    risulti profittevole al netto dei costi sull'orizzonte ``horizon_ms``.
+    ``features`` e' il dizionario che ha generato la decisione: viene loggato
+    integralmente, senza di esso l'autopsia e' impossibile.
+    """
+
+    symbol: str
+    ts_ms: TimestampMs
+    direction: SignalDirection
+    probability: float
+    features: Mapping[str, float]
+    generator: str
+    horizon_ms: int
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.probability <= 1.0:
+            raise ValueError(f"probability {self.probability} fuori da [0, 1]")
+        if self.horizon_ms <= 0:
+            raise ValueError(f"horizon_ms {self.horizon_ms} deve essere positivo")
+
+    @property
+    def edge(self) -> float:
+        """Scostamento dal coin flip. Negativo = segnale contro la direzione."""
+        return self.probability - 0.5
+
+
+@dataclass(frozen=True, slots=True)
+class Order:
+    """Intenzione di negoziare, gia' approvata dal risk manager.
+
+    ``client_order_id`` e' deterministico (cfr. ``execution/idempotency.py``):
+    reinviare lo stesso ordine dopo un crash non produce un secondo fill.
+    """
+
+    client_order_id: str
+    symbol: str
+    side: Side
+    order_type: OrderType
+    quantity: Decimal
+    created_at_ms: TimestampMs
+    price: Decimal | None = None
+    time_in_force: TimeInForce | None = None
+    reduce_only: bool = False
+    status: OrderStatus = OrderStatus.LOCAL
+    exchange_order_id: str | None = None
+    filled_quantity: Decimal = Decimal(0)
+    average_fill_price: Decimal | None = None
+    signal_ts_ms: TimestampMs | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.quantity <= 0:
+            raise ValueError(
+                f"ordine {self.client_order_id}: quantita' {self.quantity} non positiva"
+            )
+        if self.order_type is not OrderType.MARKET and self.price is None:
+            raise ValueError(f"ordine {self.client_order_id}: {self.order_type} richiede un prezzo")
+        if self.price is not None and self.price <= 0:
+            raise ValueError(f"ordine {self.client_order_id}: prezzo {self.price} non positivo")
+        if self.filled_quantity < 0 or self.filled_quantity > self.quantity:
+            raise ValueError(
+                f"ordine {self.client_order_id}: filled {self.filled_quantity} "
+                f"fuori da [0, {self.quantity}]"
+            )
+
+    @property
+    def remaining_quantity(self) -> Decimal:
+        return self.quantity - self.filled_quantity
+
+    @property
+    def notional(self) -> Decimal | None:
+        """Notional stimato. ``None`` per i market order senza prezzo di riferimento."""
+        if self.price is None:
+            return None
+        return self.price * self.quantity
+
+
+@dataclass(frozen=True, slots=True)
+class Fill:
+    """Esecuzione (anche parziale) di un nostro ordine."""
+
+    client_order_id: str
+    symbol: str
+    side: Side
+    price: Decimal
+    quantity: Decimal
+    fee: Decimal
+    fee_asset: str
+    ts_ms: TimestampMs
+    is_maker: bool
+    trade_id: str
+    exchange_order_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.quantity <= 0:
+            raise ValueError(f"fill {self.trade_id}: quantita' {self.quantity} non positiva")
+        if self.price <= 0:
+            raise ValueError(f"fill {self.trade_id}: prezzo {self.price} non positivo")
+
+    @property
+    def notional(self) -> Decimal:
+        return self.price * self.quantity
+
+    @property
+    def signed_quantity(self) -> Decimal:
+        return self.quantity * self.side.sign
+
+    def base_asset(self, quote_asset: str) -> str:
+        """Moneta scambiata, dedotta dal simbolo."""
+        return self.symbol.removesuffix(quote_asset)
+
+    def fee_in_base(self, quote_asset: str) -> bool:
+        """Vero se la commissione e' trattenuta sulla moneta scambiata.
+
+        E' il caso normale di un acquisto su Binance: compri un BTC e te ne
+        accreditano 0,999.
+        """
+        return self.fee > 0 and self.fee_asset == self.base_asset(quote_asset)
+
+    def fee_in_quote(self, quote_asset: str) -> bool:
+        return self.fee > 0 and self.fee_asset == quote_asset
+
+    def fee_value_in_quote(self, quote_asset: str) -> Decimal:
+        """Commissione nella valuta di conto.
+
+        Quella in natura si valuta al prezzo dell'eseguito, che e' noto ed
+        esatto. Quella in una terza moneta (tipicamente BNB) non e'
+        convertibile senza un prezzo che qui non c'e': vale zero in questo
+        conteggio e viene registrata a parte, invece di essere inventata.
+        """
+        if self.fee_in_quote(quote_asset):
+            return self.fee
+        if self.fee_in_base(quote_asset):
+            return self.fee * self.price
+        return Decimal(0)
+
+    def net_base_delta(self, quote_asset: str) -> Decimal:
+        """Variazione effettiva della moneta scambiata, commissione inclusa."""
+        delta = self.signed_quantity
+        if self.fee_in_base(quote_asset):
+            delta -= self.fee
+        return delta
+
+    def cash_delta(self, quote_asset: str) -> Decimal:
+        """Variazione della liquidita'.
+
+        Il controvalore scambiato, piu' la commissione solo se pagata nella
+        valuta di conto: una fee in natura o in BNB non tocca il cash.
+        """
+        delta = -self.signed_quantity * self.price
+        if self.fee_in_quote(quote_asset):
+            delta -= self.fee
+        return delta
+
+
+@dataclass(frozen=True, slots=True)
+class Position:
+    """Posizione netta su un simbolo. ``quantity`` firmata: <0 = short."""
+
+    symbol: str
+    quantity: Decimal = Decimal(0)
+    average_entry_price: Decimal = Decimal(0)
+    realized_pnl: Decimal = Decimal(0)
+    fees_paid: Decimal = Decimal(0)
+    opened_at_ms: TimestampMs | None = None
+    last_update_ms: TimestampMs | None = None
+
+    @property
+    def is_flat(self) -> bool:
+        return self.quantity == 0
+
+    @property
+    def side(self) -> Side | None:
+        if self.quantity > 0:
+            return Side.BUY
+        if self.quantity < 0:
+            return Side.SELL
+        return None
+
+    def notional(self, mark_price: Decimal) -> Decimal:
+        """Esposizione lorda al prezzo di mercato corrente."""
+        return abs(self.quantity) * mark_price
+
+    def unrealized_pnl(self, mark_price: Decimal) -> Decimal:
+        if self.is_flat:
+            return Decimal(0)
+        return (mark_price - self.average_entry_price) * self.quantity
+
+    def apply_fill(
+        self, fill: Fill, *, quote_asset: str = "USDT"
+    ) -> tuple[Position, Decimal]:
+        """Applica un fill e restituisce (nuova posizione, pnl realizzato dal fill).
+
+        Gestisce apertura, incremento, riduzione parziale e inversione di segno.
+        Le fee sono sempre sottratte: nessun risultato "al lordo".
+
+        Due cose che sembrano dettagli e non lo sono:
+
+        * la commissione puo' essere trattenuta sulla moneta comprata, e in
+          quel caso le monete che arrivano davvero sono meno di quelle
+          eseguite. Ignorarlo fa credere al bot di possedere piu' di quanto
+          ha, e la riconciliazione con l'exchange diverge al primo ordine;
+        * la commissione d'ingresso entra nel prezzo di carico, cosi' ogni
+          chiusura se la porta dietro: un giro in perdita non puo' risultare
+          in guadagno solo perche' quella fee era stata contata altrove.
+        """
+        if fill.symbol != self.symbol:
+            raise ValueError(f"fill su {fill.symbol} applicato a posizione {self.symbol}")
+
+        delta = fill.net_base_delta(quote_asset)
+        fee_quote = fill.fee_value_in_quote(quote_asset)
+        new_quantity = self.quantity + delta
+        realized = Decimal(0)
+        new_entry = self.average_entry_price
+
+        if self.quantity == 0 or (self.quantity > 0) == (delta > 0):
+            # Apertura o incremento: il carico e' quanto e' costato davvero,
+            # commissione inclusa, diviso per le monete effettivamente avute.
+            cost_of_fill = fill.price * fill.quantity + (
+                fee_quote if fill.fee_in_quote(quote_asset) else Decimal(0)
+            )
+            total_cost = self.average_entry_price * abs(self.quantity) + cost_of_fill
+            new_entry = total_cost / abs(new_quantity) if new_quantity != 0 else Decimal(0)
+        else:
+            closed = min(abs(delta), abs(self.quantity))
+            # il segno della posizione precedente determina il verso del profitto
+            realized = (fill.price - self.average_entry_price) * closed * (
+                Decimal(1) if self.quantity > 0 else Decimal(-1)
+            )
+            realized -= fee_quote
+            if new_quantity == 0:
+                new_entry = Decimal(0)
+            elif (new_quantity > 0) != (self.quantity > 0):
+                # inversione: il residuo apre una nuova posizione al prezzo del fill
+                new_entry = fill.price
+
+        return (
+            Position(
+                symbol=self.symbol,
+                quantity=new_quantity,
+                average_entry_price=new_entry,
+                realized_pnl=self.realized_pnl + realized,
+                fees_paid=self.fees_paid + fee_quote,
+                opened_at_ms=fill.ts_ms if self.is_flat else self.opened_at_ms,
+                last_update_ms=fill.ts_ms,
+            ),
+            realized,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Decision:
+    """Riga di autopsia: una per ogni valutazione del bot, approvata o no.
+
+    Principio 4 del progetto. Viene serializzata integralmente dal logger: se
+    manca una di queste informazioni, a posteriori non si capisce piu' perche'
+    il bot abbia fatto quello che ha fatto.
+    """
+
+    ts_ms: TimestampMs
+    symbol: str
+    signal: Signal | None
+    approved: bool
+    order: Order | None = None
+    rejection_reasons: tuple[str, ...] = ()
+    risk_snapshot: Mapping[str, Any] = field(default_factory=dict)
+    mode: str = "unknown"
+
+    def __post_init__(self) -> None:
+        if self.approved and self.order is None:
+            raise ValueError("decisione approvata senza ordine associato")
+        if not self.approved and not self.rejection_reasons:
+            raise ValueError("decisione rifiutata senza motivazione: autopsia impossibile")
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolFilters:
+    """Filtri di negoziazione di un simbolo, letti da ``exchangeInfo``.
+
+    Non sono mai valori ipotizzati: Binance cambia i notional minimi e gli step
+    senza preavviso, e un ordine che li viola viene rifiutato dopo l'invio,
+    quando ha gia' consumato rate limit e tempo. Il risk manager li applica
+    PRIMA dell'invio.
+    """
+
+    symbol: str
+    tick_size: Decimal
+    step_size: Decimal
+    min_quantity: Decimal
+    max_quantity: Decimal
+    min_notional: Decimal
+    base_precision: int
+    quote_precision: int
+    #: Istante di lettura: un filtro vecchio va riletto, non riusato.
+    fetched_at_ms: TimestampMs
+    #: Limiti propri degli ordini a mercato (MARKET_LOT_SIZE). Binance li
+    #: tiene separati da LOT_SIZE e possono differire: il bot invia ordini a
+    #: mercato, quindi usare lo step sbagliato significa farseli rifiutare.
+    #: ``None`` quando il simbolo non espone il filtro.
+    market_step_size: Decimal | None = None
+    market_min_quantity: Decimal | None = None
+    market_max_quantity: Decimal | None = None
+    #: Tetto di controvalore del filtro NOTIONAL, quando presente.
+    max_notional: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        if self.tick_size <= 0 or self.step_size <= 0:
+            raise ValueError(f"{self.symbol}: tick_size e step_size devono essere positivi")
+        if self.min_quantity > self.max_quantity:
+            raise ValueError(f"{self.symbol}: min_quantity > max_quantity")
+
+    def per_ordine(self, order_type: OrderType) -> SymbolFilters:
+        """Gli stessi filtri, con i limiti che valgono per questo tipo di ordine.
+
+        Per gli ordini a mercato subentrano i limiti di MARKET_LOT_SIZE dove
+        il simbolo li dichiara; per tutti gli altri restano quelli di
+        LOT_SIZE. Restituisce se stesso quando non cambia nulla, cosi' il
+        chiamante puo' usarlo senza preoccuparsi del caso comune.
+        """
+        if order_type is not OrderType.MARKET:
+            return self
+        if self.market_step_size is None and self.market_min_quantity is None:
+            return self
+        return replace(
+            self,
+            step_size=self.market_step_size or self.step_size,
+            min_quantity=self.market_min_quantity or self.min_quantity,
+            max_quantity=self.market_max_quantity or self.max_quantity,
+        )
+
+    def round_quantity(self, quantity: Decimal) -> Decimal:
+        """Tronca la quantita' allo step. Sempre verso il basso: non si compra
+        mai piu' di quanto il sizing ha deciso."""
+        if quantity <= 0:
+            return Decimal(0)
+        steps = (quantity / self.step_size).to_integral_value(rounding=ROUND_DOWN)
+        return (steps * self.step_size).normalize()
+
+    def round_price(self, price: Decimal, side: Side) -> Decimal:
+        """Allinea il prezzo al tick nella direzione conservativa.
+
+        Un BUY arrotonda verso il basso e un SELL verso l'alto: l'ordine
+        risultante non e' mai piu' aggressivo di quello richiesto.
+        """
+        rounding = ROUND_DOWN if side is Side.BUY else ROUND_UP
+        ticks = (price / self.tick_size).to_integral_value(rounding=rounding)
+        return (ticks * self.tick_size).normalize()
+
+    def is_stale(self, now_ms: TimestampMs, max_age_ms: int) -> bool:
+        return now_ms - self.fetched_at_ms > max_age_ms
+
+    def quantity_violations(self, quantity: Decimal, price: Decimal) -> tuple[str, ...]:
+        """Filtri violati dalla sola quantita' e dal notional risultante.
+
+        Separato da ``violations`` perche' il dimensionamento lavora su un
+        prezzo di riferimento (il mid), che non deve essere allineato al tick:
+        l'allineamento riguarda il prezzo dell'ordine, deciso dopo.
+        """
+        problems: list[str] = []
+        if quantity < self.min_quantity:
+            problems.append(
+                f"quantita' {quantity} sotto LOT_SIZE.minQty {self.min_quantity}"
+            )
+        if quantity > self.max_quantity:
+            problems.append(
+                f"quantita' {quantity} sopra LOT_SIZE.maxQty {self.max_quantity}"
+            )
+        if quantity % self.step_size != 0:
+            problems.append(f"quantita' {quantity} non multipla di stepSize {self.step_size}")
+        notional = quantity * price
+        if notional < self.min_notional:
+            problems.append(
+                f"notional {notional} sotto MIN_NOTIONAL {self.min_notional}"
+            )
+        if self.max_notional is not None and notional > self.max_notional:
+            problems.append(
+                f"notional {notional} sopra il massimo {self.max_notional}"
+            )
+        return tuple(problems)
+
+    def violations(self, quantity: Decimal, price: Decimal) -> tuple[str, ...]:
+        """Filtri violati da un ordine completo. Vuoto significa inviabile."""
+        problems = list(self.quantity_violations(quantity, price))
+        if price % self.tick_size != 0:
+            problems.append(f"prezzo {price} non multiplo di tickSize {self.tick_size}")
+        return tuple(problems)

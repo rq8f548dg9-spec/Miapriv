@@ -1,0 +1,1594 @@
+"""Pannello di controllo locale: il bot si usa dal browser, non dal terminale.
+
+Server e bot girano nello stesso processo e nello stesso event loop: il
+pannello non "parla" con il bot attraverso la rete, lo tiene in mano.
+
+Tre proprieta' di sicurezza che il pannello NON puo' aggirare, per scelta:
+
+* **si affaccia solo su 127.0.0.1**. Un'interfaccia che puo' muovere denaro
+  non deve essere raggiungibile dalla rete locale, men che meno da internet;
+* **non puo' passare a denaro reale**. Il passaggio a ``live`` resta una
+  modifica manuale al file piu' una variabile d'ambiente: un bottone e'
+  troppo facile da premere;
+* **non mostra mai le chiavi API**. Le riceve, le scrive in ``.env``, e da
+  quel momento risponde soltanto "configurate: si'".
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import copy
+import json
+import logging
+import os
+import platform
+import re
+import subprocess
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+import yaml
+from aiohttp import web
+
+from apprendimento.esperimenti import (
+    CANDIDATI_STANDARD,
+    RegistroEsperimenti,
+    impronta_dei_dati,
+    valuta_candidati,
+)
+from backtest.engine import BacktestEngine
+from backtest.frequenza import esplora, esplora_coppie, esplora_orizzonti
+from backtest.metrics import assess
+from backtest.scenari import simula_scenari
+from config.credentials import (
+    TESTNET_KEY_VAR,
+    TESTNET_SECRET_VAR,
+    load_credentials,
+    load_dotenv,
+)
+from config.schema import AppConfig, Mode, load_config
+from core.ledger import EventKind, EventLedger, LedgerError
+from core.types import TimestampMs, datetime_to_ms, ms_to_datetime
+from data.store import ParquetStore
+from monitoring.logger import to_jsonable
+from runner import TradingBot, build_bot, build_generator, percorso_registro
+
+__all__ = [
+    "BotSupervisor",
+    "create_app",
+    "errori_leggibili",
+    "friendly_validation_message",
+    "patch_yaml_value",
+    "run_ui",
+    "same_origin_only",
+]
+
+logger = logging.getLogger("trading_bot.webui")
+
+STATIC_DIR = Path(__file__).parent / "static"
+#: Punti massimi conservati per il grafico: oltre, la pagina diventa lenta
+#: senza mostrare nulla di piu'.
+MAX_EQUITY_POINTS = 2_000
+MAX_DECISIONS_SHOWN = 200
+
+
+class UiError(Exception):
+    """Errore da mostrare all'utente nel pannello, in italiano."""
+
+
+@dataclass
+class Job:
+    """Operazione lunga (scarico dati, backtest) in corso o conclusa."""
+
+    name: str
+    state: str = "in corso"
+    message: str = ""
+    result: dict[str, Any] = field(default_factory=dict)
+    started_at: float = field(default_factory=time.time)
+
+    @property
+    def is_running(self) -> bool:
+        return self.state == "in corso"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "nome": self.name,
+            "stato": self.state,
+            "messaggio": self.message,
+            "risultato": self.result,
+            "secondi": round(time.time() - self.started_at, 1),
+        }
+
+
+@dataclass
+class BotSupervisor:
+    """Possiede il bot: lo avvia, lo ferma, ne espone lo stato al pannello."""
+
+    config_path: Path
+    config: AppConfig
+    bot: TradingBot | None = None
+    task: asyncio.Task[None] | None = None
+    sampler: asyncio.Task[None] | None = None
+    equity_history: list[tuple[TimestampMs, str]] = field(default_factory=list)
+    #: Prezzo di ogni simbolo nel tempo. La curva del capitale resta
+    #: piatta finche' non si chiude un'operazione: il prezzo invece si
+    #: muove sempre, ed e' la prova che i dati stanno arrivando.
+    price_history: dict[str, list[tuple[TimestampMs, str]]] = field(
+        default_factory=dict
+    )
+    job: Job | None = None
+    #: Riferimento al task del lavoro in corso: senza, il garbage collector
+    #: puo' raccoglierlo a meta' e il lavoro sparisce in silenzio.
+    job_task: asyncio.Task[None] | None = None
+    last_error: str | None = None
+    started_at_ms: TimestampMs | None = None
+
+    # -- stato ------------------------------------------------------------
+
+    @property
+    def is_running(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    def reload_config(self) -> AppConfig:
+        self.config = load_config(self.config_path)
+        return self.config
+
+    def credentials_present(self) -> bool:
+        # Paper non firma niente: non ci sono chiavi da avere, e chiederle
+        # sarebbe un ostacolo per l'unica modalita' che si puo' avviare
+        # senza rischiare nulla.
+        if self.config.mode in (Mode.BACKTEST, Mode.PAPER):
+            return True
+        try:
+            return load_credentials(self.config.mode) is not None
+        except Exception:
+            return False
+
+    def stored_candles(self) -> dict[str, Any]:
+        """Quante candele ci sono per simbolo: serve a sapere se si puo' testare."""
+        store = ParquetStore(self.config.data.parquet_root)
+        counts: dict[str, int] = {}
+        for path in store.partitions("candles"):
+            symbol = path.parent.name.removeprefix("symbol=")
+            # il numero di righe e' nel nome del file: part-<ora>-<righe>.parquet
+            parts = path.stem.rsplit("-", 1)
+            counts[symbol] = counts.get(symbol, 0) + (
+                int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 0
+            )
+        return {
+            "per_simbolo": counts,
+            "totale": sum(counts.values()),
+            "cartella": str(self.config.data.parquet_root),
+        }
+
+    def attivita(self) -> dict[str, Any]:
+        """Cosa sta facendo il bot adesso, in parole.
+
+        Un pannello che mostra solo numeri fermi fa pensare che il bot sia
+        rotto proprio quando sta lavorando: con candele da un minuto, le
+        barre di warmup richiedono ore, e l'equity resta piatta finche' non
+        si chiude un'operazione. Qui si dice quale delle due cose e'.
+        """
+        bot = self.bot
+        necessarie = self.config.features.warmup_bars
+        if bot is None:
+            return {
+                "stato": "fermo",
+                "spiegazione": "il bot non è avviato.",
+                "flusso_attivo": False,
+                "ultimo_dato_ms": None,
+                "eta_dato_s": None,
+                "simboli": [
+                    {
+                        "simbolo": s.symbol,
+                        "barre": 0,
+                        "barre_necessarie": necessarie,
+                        "pronto": False,
+                        "ultimo_prezzo": None,
+                    }
+                    for s in self.config.enabled_symbols
+                ],
+                "ultima_decisione_ms": None,
+                "ultimo_motivo": None,
+            }
+
+        now_ms = bot.clock.now_ms()
+        eta_s = (now_ms - bot.last_data_ms) / 1000.0 if bot.last_data_ms else None
+        simboli: list[dict[str, Any]] = []
+        for symbol_config in self.config.enabled_symbols:
+            symbol = symbol_config.symbol
+            barre = bot.features.state_for(symbol).bars_seen
+            prezzo = bot.last_prices.get(symbol)
+            simboli.append(
+                {
+                    "simbolo": symbol,
+                    "barre": barre,
+                    "barre_necessarie": necessarie,
+                    "pronto": barre >= necessarie,
+                    "ultimo_prezzo": str(prezzo) if prezzo is not None else None,
+                }
+            )
+
+        ultima = bot.risk.decisions[-1] if bot.risk.decisions else None
+        motivo = None
+        if ultima is not None:
+            motivo = (
+                "approvata"
+                if ultima.approved
+                else (ultima.rejection_reasons[0] if ultima.rejection_reasons else "rifiutata")
+            )
+
+        mancanti = [s for s in simboli if not s["pronto"]]
+        if not bot.running:
+            stato = "fermo"
+            spiegazione = "il bot non è avviato."
+        elif eta_s is not None and eta_s > 120:
+            stato = "flusso dati fermo"
+            spiegazione = (
+                f"l'ultimo dato di mercato è arrivato {int(eta_s)} secondi fa: "
+                "la connessione potrebbe essere caduta. Il bot continua a "
+                "riprovare da solo."
+            )
+        elif mancanti:
+            peggiore = min(mancanti, key=lambda s: int(s["barre"]))
+            restano = necessarie - int(peggiore["barre"])
+            stato = f"raccolta dati, {peggiore['barre']}/{necessarie} candele"
+            spiegazione = (
+                f"prima di decidere servono {necessarie} candele chiuse per simbolo. "
+                f"Ne mancano {restano} su {peggiore['simbolo']}: con candele da un "
+                "minuto sono circa altrettanti minuti. Scaricare lo storico dal passo 2 "
+                "della preparazione le fornisce subito."
+            )
+        else:
+            stato = "operativo, in cerca di un segnale"
+            spiegazione = (
+                "i dati bastano e il bot valuta a ogni giro. Finche' il vantaggio "
+                "stimato non supera i costi non apre niente, ed è il comportamento "
+                "voluto: le decisioni rifiutate sono elencate qui sotto con il motivo."
+            )
+
+        return {
+            "stato": stato,
+            "spiegazione": spiegazione,
+            "flusso_attivo": eta_s is not None and eta_s <= 120,
+            "ultimo_dato_ms": bot.last_data_ms or None,
+            "eta_dato_s": round(eta_s, 1) if eta_s is not None else None,
+            "simboli": simboli,
+            "ultima_decisione_ms": ultima.ts_ms if ultima else None,
+            "ultimo_motivo": motivo,
+        }
+
+    MAX_PUNTI_PREZZO = 600
+
+    def campiona_prezzi(self) -> None:
+        """Aggiunge un punto per simbolo alla serie dei prezzi."""
+        bot = self.bot
+        if bot is None:
+            return
+        adesso = bot.clock.now_ms()
+        for symbol, prezzo in bot.last_prices.items():
+            serie = self.price_history.setdefault(symbol, [])
+            serie.append((adesso, str(prezzo)))
+            if len(serie) > self.MAX_PUNTI_PREZZO:
+                del serie[: len(serie) - self.MAX_PUNTI_PREZZO]
+
+    def prezzi(self) -> dict[str, Any]:
+        """Serie dei prezzi, pronte per il grafico."""
+        return {
+            "serie": [
+                {
+                    "simbolo": symbol,
+                    "punti": [{"t": ts, "prezzo": valore} for ts, valore in punti],
+                }
+                for symbol, punti in sorted(self.price_history.items())
+                if punti
+            ]
+        }
+
+    def allinea_capitale(self, nuovo: Decimal) -> str | None:
+        """Porta il capitale in gestione al valore scelto, se si puo'.
+
+        Il registro e' la verita' sul patrimonio, ed e' giusto: altrimenti
+        il guadagno non si reinveste. Ma finche' non e' successo niente,
+        la casella delle impostazioni deve poter fare quello che dice,
+        altrimenti l'utente la cambia, preme avvia e vede tornare il
+        valore di prima senza capire perche'.
+
+        La differenza si scrive come movimento, non si sovrascrive la
+        storia: il patrimonio non cambia mai senza che si veda perche'.
+        Dopo le prime operazioni la casella non basta piu', e il metodo
+        lo dice invece di fingere.
+        """
+        ledger = self.registro()
+        if any(
+            evento.kind is EventKind.ESECUZIONE for evento in ledger.events()
+        ):
+            return (
+                "il bot ha gia' operato: da qui il capitale non si riscrive. "
+                "Per aggiungere o togliere denaro usa «Capitale in gestione» "
+                "e registra un movimento."
+            )
+        corrente = ledger.replay(self.config.quote_asset).capitale_in_gestione
+        differenza = nuovo - corrente
+        if differenza == 0:
+            return None
+        adesso = int(time.time() * 1000)
+        try:
+            if differenza > 0:
+                ledger.conferimento(
+                    differenza, ts_ms=adesso, note="adeguamento dalle impostazioni"
+                )
+            else:
+                ledger.prelievo(
+                    -differenza, ts_ms=adesso, note="adeguamento dalle impostazioni"
+                )
+        except LedgerError as exc:
+            return str(exc)
+        return None
+
+    def registro(self) -> EventLedger:
+        """Registro del patrimonio, sempre quello del bot."""
+        ledger = EventLedger(percorso_registro(self.config))
+        ledger.apri_se_vuoto(self.config.capital_quote, ts_ms=int(time.time() * 1000))
+        return ledger
+
+    def capitale(self) -> dict[str, Any]:
+        """I tre numeri, separati: conferito, guadagnato, presente."""
+        stato = self.registro().replay(self.config.quote_asset)
+        return {
+            "valuta": self.config.quote_asset,
+            "conferito": str(stato.conferito),
+            "prelevato": str(stato.prelevato),
+            "guadagno_netto": str(stato.pnl_netto),
+            "commissioni": str(stato.commissioni),
+            "in_gestione": str(stato.capitale_in_gestione),
+            "liquido": str(stato.portfolio.cash),
+            "movimenti": [
+                {
+                    "seq": evento.seq,
+                    "tipo": evento.kind.value,
+                    "ts_ms": evento.ts_ms,
+                    "importo": str(evento.amount),
+                    "nota": evento.note,
+                }
+                for evento in self.registro().events()
+                if evento.kind is not EventKind.ESECUZIONE
+            ][-20:],
+            "avvertenza": (
+                "Qui si registra il movimento, non si sposta denaro: il versamento "
+                "o il prelievo vanno fatti sull'exchange. Il bot non ha il permesso "
+                "di prelievo e non deve averlo."
+            ),
+        }
+
+    def registra_movimento(self, tipo: str, importo: Decimal) -> dict[str, Any]:
+        """Scrive un conferimento o un prelievo nel registro.
+
+        Solo a bot fermo: cambiare la base del dimensionamento mentre il
+        bot sta valutando vorrebbe dire due verita' diverse sullo stesso
+        patrimonio nello stesso istante.
+        """
+        if self.is_running:
+            raise UiError(
+                "ferma il bot prima di registrare un movimento di capitale: "
+                "cambiarlo mentre opera gli lascerebbe in mano un patrimonio "
+                "diverso da quello scritto"
+            )
+        ledger = self.registro()
+        adesso = int(time.time() * 1000)
+        try:
+            if tipo == "conferimento":
+                ledger.conferimento(importo, ts_ms=adesso, note="registrato dal pannello")
+            elif tipo == "prelievo":
+                ledger.prelievo(importo, ts_ms=adesso, note="registrato dal pannello")
+            else:
+                raise UiError(f"movimento sconosciuto: {tipo!r}")
+        except LedgerError as exc:
+            raise UiError(str(exc)) from exc
+        return self.capitale()
+
+    def status(self) -> dict[str, Any]:
+        bot = self.bot
+        payload: dict[str, Any] = {
+            "modalita": self.config.mode.value,
+            "denaro_reale": self.config.mode.uses_real_money,
+            "in_esecuzione": self.is_running,
+            "credenziali_presenti": self.credentials_present(),
+            "simboli": [s.symbol for s in self.config.enabled_symbols],
+            "capitale": str(self.config.capital_quote),
+            "valuta": self.config.quote_asset,
+            "generatore": self.config.signals.generator,
+            "ultimo_errore": self.last_error,
+            "lavoro": self.job.to_dict() if self.job else None,
+            "avviato_ms": self.started_at_ms,
+            "dati": self.stored_candles(),
+            "attivita": self.attivita(),
+        }
+
+        if bot is None:
+            payload.update(
+                {
+                    "equity": str(self.config.capital_quote),
+                    "cash": str(self.config.capital_quote),
+                    "pnl_realizzato": "0",
+                    "pnl_non_realizzato": "0",
+                    "commissioni": "0",
+                    "posizioni": [],
+                    "drawdown_giornaliero": 0.0,
+                    "drawdown_totale": 0.0,
+                    "perdite_consecutive": 0,
+                    "killswitch": {"scattato": False, "motivo": None, "puo_aprire": True},
+                    "decisioni_totali": 0,
+                    "ordini_registrati": 0,
+                }
+            )
+            return payload
+
+        snapshot = bot.portfolio.snapshot(bot.clock.now_ms())
+        last_event = bot.risk.killswitch.last_event
+        payload.update(
+            {
+                "equity": str(snapshot.equity),
+                "cash": str(snapshot.cash),
+                "pnl_realizzato": str(bot.portfolio.realized_pnl),
+                "pnl_non_realizzato": str(snapshot.unrealized_pnl),
+                "commissioni": str(bot.portfolio.fees_paid),
+                "posizioni": [
+                    {
+                        "simbolo": symbol,
+                        "quantita": str(position.quantity),
+                        "prezzo_carico": str(position.average_entry_price),
+                        "prezzo_corrente": str(
+                            bot.last_prices.get(symbol, position.average_entry_price)
+                        ),
+                        "valore": str(
+                            position.notional(
+                                bot.last_prices.get(symbol, position.average_entry_price)
+                            )
+                        ),
+                        "pnl": str(
+                            position.unrealized_pnl(
+                                bot.last_prices.get(symbol, position.average_entry_price)
+                            )
+                        ),
+                    }
+                    for symbol, position in snapshot.open_positions.items()
+                ],
+                "drawdown_giornaliero": round(snapshot.daily_drawdown_pct, 4),
+                "drawdown_totale": round(snapshot.total_drawdown_pct, 4),
+                "perdite_consecutive": snapshot.consecutive_losses,
+                "killswitch": {
+                    "scattato": bot.risk.killswitch.is_tripped,
+                    "motivo": last_event.describe() if last_event else None,
+                    "puo_aprire": bot.risk.killswitch.allows_opening(bot.clock.now_ms()),
+                },
+                "decisioni_totali": len(bot.risk.decisions),
+                "ordini_registrati": len(bot.registry),
+                "messaggi_ricevuti": None,
+            }
+        )
+        return payload
+
+    def decisions(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Ultime decisioni, dalla piu' recente. E' il cuore del pannello."""
+        if self.bot is None:
+            return []
+        rows: list[dict[str, Any]] = []
+        for decision in list(self.bot.risk.decisions)[-limit:][::-1]:
+            signal = decision.signal
+            rows.append(
+                {
+                    "ts_ms": decision.ts_ms,
+                    "simbolo": decision.symbol,
+                    "approvata": decision.approved,
+                    "direzione": signal.direction.value if signal else None,
+                    "probabilita": round(signal.probability, 4) if signal else None,
+                    "motivi": list(decision.rejection_reasons),
+                    "quantita": str(decision.order.quantity) if decision.order else None,
+                    "feature": dict(signal.features) if signal else {},
+                    "rischio": to_jsonable(decision.risk_snapshot),
+                }
+            )
+        return rows
+
+    # -- controllo --------------------------------------------------------
+
+    async def start(self) -> None:
+        if self.is_running:
+            raise UiError("il bot e' gia' in esecuzione")
+        self.reload_config()
+        if self.config.mode is Mode.BACKTEST:
+            raise UiError(
+                "la modalita' e' 'backtest': per far girare il bot imposta "
+                "'paper' (mercato vero, ordini simulati, nessuna chiave) "
+                "oppure 'testnet'"
+            )
+        if not self.credentials_present():
+            raise UiError(
+                "chiavi API mancanti: inseriscile nella sezione Connessione prima di avviare"
+            )
+
+        self.last_error = None
+        self.bot = build_bot(self.config)
+        self.started_at_ms = self.bot.clock.now_ms()
+        self.equity_history.clear()
+        self.price_history.clear()
+        self.task = asyncio.create_task(self._run_bot())
+        self.sampler = asyncio.create_task(self._sample_equity())
+        logger.info("bot avviato dal pannello in modalita' %s", self.config.mode.value)
+
+    async def _run_bot(self) -> None:
+        assert self.bot is not None
+        try:
+            await self.bot.run()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            logger.exception("il bot si e' fermato per un errore")
+
+    async def _sample_equity(self) -> None:
+        """Campiona equity e prezzi per i grafici, a intervalli regolari."""
+        while True:
+            await asyncio.sleep(5)
+            if self.bot is None:
+                continue
+            self.campiona_prezzi()
+            point = (self.bot.clock.now_ms(), str(self.bot.portfolio.equity))
+            self.equity_history.append(point)
+            if len(self.equity_history) > MAX_EQUITY_POINTS:
+                del self.equity_history[: len(self.equity_history) - MAX_EQUITY_POINTS]
+
+    async def stop(self) -> None:
+        if self.bot is not None:
+            self.bot.running = False
+        for task in (self.sampler, self.task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        self.task = None
+        self.sampler = None
+        logger.info("bot fermato dal pannello")
+
+    async def flatten(self) -> int:
+        if self.bot is None:
+            raise UiError("il bot non e' in esecuzione")
+        before = len(self.bot.portfolio.positions)
+        await self.bot.flatten_all()
+        return before
+
+    def reset_killswitch(self) -> bool:
+        if self.bot is None:
+            raise UiError("il bot non e' in esecuzione")
+        return self.bot.risk.killswitch.reset(self.bot.clock.now_ms())
+
+
+# ---------------------------------------------------------------------------
+# API
+# ---------------------------------------------------------------------------
+
+
+def _json(payload: Any, status: int = 200) -> web.Response:
+    return web.json_response(to_jsonable(payload), status=status)
+
+
+def _error(message: str, status: int = 400) -> web.Response:
+    return web.json_response({"errore": message}, status=status)
+
+
+async def _read_json(request: web.Request) -> dict[str, Any]:
+    # aiohttp non controlla il content-type in .json(): senza questo, un
+    # modulo HTML di un altro sito (che puo' inviare solo text/plain) sarebbe
+    # una richiesta valida per gli endpoint che leggono un corpo.
+    if request.content_type != "application/json":
+        raise UiError("richiesta non valida: atteso un corpo JSON")
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        raise UiError("richiesta non valida") from exc
+    if not isinstance(payload, dict):
+        raise UiError("richiesta non valida")
+    return payload
+
+
+#: Forma ammessa per una chiave API Binance. Tutto cio' che non rientra
+#: qui non e' una chiave, e non deve finire in un file di configurazione.
+_CHIAVE_VALIDA = re.compile(r"[A-Za-z0-9_-]{16,128}")
+
+
+#: Forma ammessa per un nome utente Windows da passare a icacls.
+_NOME_UTENTE_VALIDO = re.compile(r"[^\\/:*?\"<>|\n\r\t]{1,104}")
+
+
+def _esegui_comando(comando: list[str]) -> bool:
+    """Esegue un comando di sistema. Vero se e' andato a buon fine.
+
+    Vive in una funzione sua perche' i test possano sostituirla: lanciare
+    davvero ``icacls`` fuori da Windows non direbbe nulla.
+    """
+    try:
+        # Nessuna shell: gli argomenti sono una lista, costruita qui dentro.
+        esito = subprocess.run(  # noqa: S603
+            comando, capture_output=True, timeout=20, check=False
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("comando %s non eseguito: %s", comando[0], exc)
+        return False
+    if esito.returncode != 0:
+        logger.warning(
+            "comando %s fallito (codice %d): %s",
+            comando[0],
+            esito.returncode,
+            esito.stderr.decode(errors="replace").strip(),
+        )
+        return False
+    return True
+
+
+def restringi_accesso(path: Path) -> str:
+    """Riserva il file al solo utente corrente. Dice cosa ha ottenuto davvero.
+
+    Su Unix basta ``chmod 600``. Su Windows non basta: i permessi POSIX non
+    esistono, ``chmod`` tocca soltanto il bit di sola lettura e il file resta
+    leggibile dagli altri utenti del computer. L'unico strumento che agisce
+    sulle ACL NTFS e' ``icacls``: si prova quello, e se non riesce si dichiara
+    "nessuna" invece di far credere a una protezione che non c'e'.
+    """
+    if platform.system() != "Windows":
+        path.chmod(0o600)
+        return "posix-600"
+
+    utente = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    if not _NOME_UTENTE_VALIDO.fullmatch(utente):
+        # Un nome che non somiglia a un nome utente non finisce nella riga di
+        # comando: diventerebbe un'opzione di icacls invece di un utente.
+        logger.warning(
+            "utente Windows non riconosciuto (%r): ACL del file chiavi non ristrette",
+            utente,
+        )
+        return "nessuna"
+    applicato = _esegui_comando(
+        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{utente}:F"]
+    )
+    if not applicato:
+        logger.warning(
+            "ACL di %s non ristrette: il file e' leggibile dagli altri utenti "
+            "di questo computer",
+            path,
+        )
+        return "nessuna"
+    return "windows-acl"
+
+
+def write_credentials(env_path: Path, api_key: str, api_secret: str) -> str:
+    """Scrive le chiavi testnet in ``.env``, preservando le altre righe.
+
+    Non tocca mai le variabili live: il pannello non deve poterle impostare.
+    Restituisce come e' stato protetto il file, per poterlo dire all'utente
+    invece di dichiarare una garanzia non verificata.
+    """
+    if not api_key or not api_secret:
+        raise UiError("chiave e segreto sono entrambi obbligatori")
+
+    # Validazione positiva, non lista nera. Vietare "\n" e "\r" non basta:
+    # str.splitlines(), che rilegge il file, spezza anche su \x85, \u2028 e
+    # altri sei caratteri. Una chiave che ne contiene uno diventerebbe una
+    # riga in piu' nel .env, e quella riga puo' essere
+    # I_UNDERSTAND_LIVE_TRADING_RISK=yes, cioe' la guardia sul denaro reale
+    # disarmata senza che nessuno l'abbia scritta.
+    for nome, valore in (("chiave", api_key), ("segreto", api_secret)):
+        if not _CHIAVE_VALIDA.fullmatch(valore):
+            raise UiError(
+                f"{nome} non valida: sono ammessi solo lettere, cifre, trattino e "
+                "trattino basso, da 16 a 128 caratteri. Copiala di nuovo da Binance."
+            )
+
+    lines: list[str] = []
+    if env_path.is_file():
+        lines = [
+            line
+            for line in env_path.read_text(encoding="utf-8").splitlines()
+            if not line.startswith((f"{TESTNET_KEY_VAR}=", f"{TESTNET_SECRET_VAR}="))
+        ]
+    lines.append(f"{TESTNET_KEY_VAR}={api_key}")
+    lines.append(f"{TESTNET_SECRET_VAR}={api_secret}")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    protezione = restringi_accesso(env_path)
+
+    # Valgono subito, senza riavviare il pannello.
+    os.environ[TESTNET_KEY_VAR] = api_key
+    os.environ[TESTNET_SECRET_VAR] = api_secret
+    return protezione
+
+
+#: Campi modificabili dal pannello, con il percorso nello YAML.
+EDITABLE_FIELDS: dict[str, tuple[str, ...]] = {
+    "capitale": ("capital_quote",),
+    "ordine_target": ("risk", "sizing", "target_order_quote"),
+    "ordine_massimo": ("risk", "sizing", "max_order_quote"),
+    "posizioni_massime": ("risk", "limits", "max_open_positions"),
+    "esposizione_massima": ("risk", "limits", "max_gross_exposure_quote"),
+    "drawdown_giornaliero": ("risk", "killswitch", "max_daily_drawdown_pct"),
+    "drawdown_totale": ("risk", "killswitch", "max_total_drawdown_pct"),
+    "perdite_consecutive": ("risk", "killswitch", "max_consecutive_losses"),
+    "probabilita_minima": ("signals", "min_probability"),
+    "edge_minimo_bps": ("signals", "min_expected_edge_bps"),
+}
+
+
+def _patch_simbolo(testo: str, simbolo: str, acceso: bool) -> str:
+    """Accende o spegne una coppia lasciando il resto del blocco intatto."""
+    righe = testo.splitlines(keepends=True)
+    dentro = False
+    for numero, riga in enumerate(righe):
+        nuda = riga.strip()
+        if nuda.startswith("- symbol:"):
+            dentro = nuda.split(":", 1)[1].strip().upper() == simbolo.upper()
+            continue
+        if dentro and nuda.startswith("enabled:"):
+            indentazione = " " * (len(riga.rstrip("\n")) - len(riga.rstrip("\n").lstrip(" ")))
+            fine = "\n" if riga.endswith("\n") else ""
+            righe[numero] = f"{indentazione}enabled: {'true' if acceso else 'false'}{fine}"
+            return "".join(righe)
+    return testo
+
+
+def patch_yaml_value(testo: str, percorso: tuple[str, ...], valore: Any) -> str:
+    """Cambia un valore nel file lasciando tutto il resto com'e'.
+
+    ``yaml.safe_dump`` riscriverebbe il file da capo e butterebbe via i
+    commenti. Quel file e' pieno di spiegazioni scritte per chi lo apre:
+    perderle a ogni salvataggio significa svuotare la documentazione
+    proprio di chi ne ha piu' bisogno.
+
+    Si cerca la riga seguendo l'indentazione, cosi' due chiavi con lo
+    stesso nome in sezioni diverse non si confondono.
+    """
+    righe = testo.splitlines(keepends=True)
+    livello = 0
+    inizio = 0
+    for profondita, chiave in enumerate(percorso):
+        atteso = "  " * profondita
+        trovata = -1
+        for numero in range(inizio, len(righe)):
+            riga = righe[numero]
+            nuda = riga.rstrip("\n")
+            if not nuda.strip() or nuda.strip().startswith("#"):
+                continue
+            rientro = len(nuda) - len(nuda.lstrip(" "))
+            if rientro < len(atteso) and numero > inizio:
+                break  # siamo usciti dalla sezione
+            if rientro != len(atteso):
+                continue
+            if nuda.strip().split(":")[0].strip() == chiave:
+                trovata = numero
+                break
+        if trovata < 0:
+            raise UiError(
+                f"chiave {'.'.join(percorso)} non trovata nel file di "
+                "configurazione: non la riscrivo alla cieca"
+            )
+        inizio = trovata + 1
+        livello = profondita
+
+    riga = righe[trovata].rstrip("\n")
+    indentazione = " " * (len(riga) - len(riga.lstrip(" ")))
+    commento = ""
+    corpo = riga.split(":", 1)[1] if ":" in riga else ""
+    if "#" in corpo:
+        commento = "  #" + corpo.split("#", 1)[1]
+    fine = "\n" if righe[trovata].endswith("\n") else ""
+    righe[trovata] = f"{indentazione}{percorso[-1]}: {valore}{commento}{fine}"
+    del livello
+    return "".join(righe)
+
+
+def apply_config_changes(raw: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    """Applica le modifiche del pannello al dizionario di configurazione.
+
+    Solo i campi in ``EDITABLE_FIELDS``: il pannello non e' un editor di file,
+    e la modalita' in particolare non e' modificabile da qui.
+    """
+    # Copia profonda: lo YAML contiene anche date, che json non sa serializzare.
+    updated: dict[str, Any] = copy.deepcopy(raw)
+    for key, value in changes.items():
+        if key == "simboli_abilitati":
+            wanted = {str(s).upper() for s in value}
+            for symbol in updated["symbols"]:
+                symbol["enabled"] = symbol["symbol"].upper() in wanted
+            continue
+        path = EDITABLE_FIELDS.get(key)
+        if path is None:
+            raise UiError(f"campo '{key}' non modificabile dal pannello")
+        target: dict[str, Any] = updated
+        for part in path[:-1]:
+            target = target[part]
+        target[path[-1]] = value
+    return updated
+
+
+#: Nomi tecnici tradotti nelle etichette che l'utente vede nel pannello.
+#: Un messaggio di errore che cita "max_open_positions" chiede alla persona
+#: di indovinare quale casella toccare.
+NOMI_LEGGIBILI: dict[str, str] = {
+    "capital_quote": "«Capitale che il bot può usare»",
+    "max_gross_exposure_quote": "«Esposizione massima totale»",
+    "max_exposure_pct_of_equity": "«Esposizione massima in percentuale»",
+    "max_open_positions": "«Posizioni aperte al massimo»",
+    "target_order_quote": "«Valore di un ordine»",
+    "max_order_quote": "«Ordine massimo»",
+    "min_order_quote": "«Valore minimo di un ordine»",
+    "max_order_pct_of_equity": "quota massima del capitale per ordine",
+    "max_daily_drawdown_pct": "«Stop se perdo in giornata»",
+    "max_total_drawdown_pct": "«Stop se perdo in totale»",
+    "max_consecutive_losses": "«Stop dopo N perdite di fila»",
+    "min_probability": "«Probabilità minima per operare»",
+    "min_expected_edge_bps": "«Vantaggio minimo dopo i costi»",
+    "kelly_fraction": "frazione di Kelly",
+}
+
+#: Vincoli di pydantic riscritti in italiano corrente.
+_VINCOLI: tuple[tuple[str, str], ...] = (
+    (r"Input should be less than or equal to (\S+)", r"non può superare \1"),
+    (r"Input should be greater than or equal to (\S+)", r"deve essere almeno \1"),
+    (r"Input should be less than (\S+)", r"deve essere minore di \1"),
+    (r"Input should be greater than (\S+)", r"deve essere maggiore di \1"),
+    (r"Input should be a valid integer.*", "deve essere un numero intero"),
+    (r"Input should be a valid number.*", "deve essere un numero"),
+    (r"Field required", "manca un valore obbligatorio"),
+    (r"Extra inputs are not permitted", "campo non riconosciuto"),
+)
+
+
+def friendly_validation_message(error: Exception) -> str:
+    """Traduce un errore di validazione in una frase che l'utente puo' usare.
+
+    Pydantic produce messaggi pensati per chi scrive il codice: citano il nome
+    del modello, il valore completo in input e un link alla documentazione.
+    Riversarli in pagina significa dire alla persona che ha sbagliato senza
+    dirle cosa cambiare.
+    """
+    errors = getattr(error, "errors", None)
+    if not callable(errors):
+        return str(error)
+
+    frasi: list[str] = []
+    for item in errors():
+        testo = str(item.get("msg", "")).removeprefix("Value error, ")
+        for pattern, replacement in _VINCOLI:
+            testo = re.sub(pattern, replacement, testo)
+        posizione = ".".join(str(part) for part in item.get("loc", ()))
+        campo = NOMI_LEGGIBILI.get(posizione.rsplit(".", 1)[-1])
+        frasi.append(f"{campo}: {testo}" if campo else testo)
+
+    messaggio = "; ".join(dict.fromkeys(frasi)) or str(error)
+    for tecnico, leggibile in NOMI_LEGGIBILI.items():
+        messaggio = messaggio.replace(tecnico, leggibile)
+    return messaggio
+
+
+#: Metodi che cambiano lo stato. Le letture non vanno protette: senza
+#: intestazioni CORS un altro sito non puo' leggerne la risposta.
+STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+#: Nomi con cui il pannello accetta di essere chiamato.
+ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
+
+@web.middleware
+async def errori_leggibili(
+    request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
+) -> web.StreamResponse:
+    """Trasforma ogni UiError in un 400 con il messaggio in chiaro.
+
+    UiError esiste proprio per dire all'utente cosa correggere. Lasciarla
+    uscire la trasforma in un 500, e nel pannello si legge "errore 500":
+    la persona non sa cosa ha sbagliato e non puo' rimediare. E' successo
+    con il modulo dei movimenti di capitale, che inviava il corpo senza
+    dichiararlo JSON.
+    """
+    try:
+        return await handler(request)
+    except UiError as exc:
+        logger.info("richiesta rifiutata: %s", exc)
+        return _error(str(exc))
+
+
+@web.middleware
+async def same_origin_only(
+    request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
+) -> web.StreamResponse:
+    """Rifiuta le richieste che cambiano stato partite da un altro sito.
+
+    Il pannello non ha password, e va bene: ascolta solo su 127.0.0.1, quindi
+    serve gia' accesso al computer. Ma il browser e' un ponte verso
+    127.0.0.1: una pagina qualunque, aperta mentre il pannello gira, puo'
+    inviare una POST a http://127.0.0.1:8777/api/avvia con un modulo HTML,
+    senza bisogno di leggerne la risposta. Basterebbe a far partire il bot o
+    a chiudere tutte le posizioni a mercato.
+
+    Due controlli, entrambi su intestazioni che il browser imposta da solo e
+    che una pagina non puo' falsificare:
+
+    * ``Sec-Fetch-Site``, inviata dai browser moderni, dice se la richiesta
+      nasce dalla stessa origine;
+    * ``Origin``, presente su ogni POST cross-origin, deve coincidere con
+      l'indirizzo su cui gira il pannello.
+    """
+    if request.method not in STATE_CHANGING_METHODS:
+        return await handler(request)
+
+    rifiuto = (
+        "richiesta bloccata: arriva da un altro sito. Il pannello accetta "
+        "comandi solo dalla propria pagina, aperta su questo computer."
+    )
+
+    # Il nome con cui siamo stati chiamati deve essere il nostro. Senza
+    # questo controllo, un dominio dell'attaccante che risolve a 127.0.0.1
+    # (DNS rebinding) diventa "stessa origine" per il browser, e Origin e
+    # Sec-Fetch-Site tornano a dire quello che lui vuole.
+    host = request.host.split(":")[0].lower()
+    if host not in ALLOWED_HOSTS:
+        logger.warning("richiesta rifiutata: Host inatteso %s", request.host)
+        return _error(
+            "richiesta bloccata: il pannello risponde solo a 127.0.0.1 e localhost.",
+            403,
+        )
+
+    fetch_site = request.headers.get("Sec-Fetch-Site")
+    if fetch_site is not None and fetch_site not in ("same-origin", "none"):
+        logger.warning("richiesta cross-site rifiutata: Sec-Fetch-Site=%s", fetch_site)
+        return _error(rifiuto, 403)
+
+    origin = request.headers.get("Origin")
+    if origin is not None and urlparse(origin).netloc != request.host:
+        logger.warning("richiesta rifiutata: Origin %s diverso da %s", origin, request.host)
+        return _error(rifiuto, 403)
+
+    return await handler(request)
+
+
+def create_app(config_path: Path, *, env_path: Path = Path(".env")) -> web.Application:
+    """Costruisce l'applicazione web del pannello."""
+    supervisor = BotSupervisor(config_path=config_path, config=load_config(config_path))
+    app = web.Application(middlewares=[errori_leggibili, same_origin_only])
+    app["supervisor"] = supervisor
+
+    async def index(request: web.Request) -> web.StreamResponse:
+        return web.FileResponse(STATIC_DIR / "index.html")
+
+    async def status(request: web.Request) -> web.Response:
+        return _json(supervisor.status())
+
+    async def decisions(request: web.Request) -> web.Response:
+        limit = min(int(request.query.get("limite", 50)), MAX_DECISIONS_SHOWN)
+        return _json({"decisioni": supervisor.decisions(limit)})
+
+    async def equity(request: web.Request) -> web.Response:
+        return _json(
+            {
+                "punti": [
+                    {"t": ts, "v": value} for ts, value in supervisor.equity_history
+                ]
+            }
+        )
+
+    async def read_raw_config() -> dict[str, Any]:
+        """Legge lo YAML in un thread: l'I/O su file non blocca l'event loop."""
+        text = await asyncio.to_thread(config_path.read_text, encoding="utf-8")
+        raw: dict[str, Any] = yaml.safe_load(text)
+        return raw
+
+    async def get_config(request: web.Request) -> web.Response:
+        raw = await read_raw_config()
+        return _json(
+            {
+                "grezza": raw,
+                "modificabili": sorted(EDITABLE_FIELDS),
+                "simboli": [
+                    {"simbolo": s["symbol"], "abilitato": s["enabled"]}
+                    for s in raw["symbols"]
+                ],
+            }
+        )
+
+    async def put_config(request: web.Request) -> web.Response:
+        if supervisor.is_running:
+            return _error("ferma il bot prima di modificare la configurazione")
+        try:
+            changes = await _read_json(request)
+            raw = await read_raw_config()
+            updated = apply_config_changes(raw, changes)
+            # Cintura e bretelle: l'elenco dei campi modificabili gia' esclude
+            # la modalita', ma qui si verifica il risultato invece
+            # dell'intenzione. model_validate non passa dalla guardia sul
+            # denaro reale, quindi se un giorno l'elenco crescesse questa
+            # riga resterebbe l'ultima difesa.
+            if updated.get("mode") != raw.get("mode"):
+                raise UiError("la modalita' non si cambia dal pannello")
+            # Validazione prima della scrittura: un file non valido
+            # impedirebbe anche di riaprire il pannello.
+            AppConfig.model_validate(updated)
+        except UiError as exc:
+            return _error(str(exc))
+        except Exception as exc:  # va mostrato nel pannello, non propagato
+            return _error(friendly_validation_message(exc))
+
+        # Si riscrivono le sole righe cambiate: il file e' pieno di
+        # commenti, e riscriverlo da capo li cancellerebbe tutti.
+        try:
+            testo = await asyncio.to_thread(config_path.read_text, encoding="utf-8")
+            for chiave, valore in changes.items():
+                if chiave == "simboli_abilitati":
+                    continue
+                percorso = EDITABLE_FIELDS[chiave]
+                testo = patch_yaml_value(testo, percorso, valore)
+            if "simboli_abilitati" in changes:
+                voluti = {str(x).upper() for x in changes["simboli_abilitati"]}
+                for simbolo in raw["symbols"]:
+                    testo = _patch_simbolo(
+                        testo, str(simbolo["symbol"]), simbolo["symbol"].upper() in voluti
+                    )
+        except UiError as exc:
+            return _error(str(exc))
+        await asyncio.to_thread(config_path.write_text, testo, encoding="utf-8")
+        supervisor.reload_config()
+        # Il capitale vive nel registro: senza questo allineamento la
+        # casella sembrerebbe salvata e all'avvio tornerebbe il valore
+        # di prima.
+        avviso = supervisor.allinea_capitale(supervisor.config.capital_quote)
+        risposta: dict[str, Any] = {"ok": True, "stato": supervisor.status()}
+        if avviso:
+            risposta["avviso"] = avviso
+        return _json(risposta)
+
+    async def set_credentials(request: web.Request) -> web.Response:
+        try:
+            payload = await _read_json(request)
+            protezione = write_credentials(
+                env_path,
+                str(payload.get("api_key", "")).strip(),
+                str(payload.get("api_secret", "")).strip(),
+            )
+        except UiError as exc:
+            return _error(str(exc))
+        risposta: dict[str, Any] = {
+            "ok": True,
+            "credenziali_presenti": supervisor.credentials_present(),
+            "protezione_file": protezione,
+        }
+        if protezione == "nessuna":
+            # Dirlo e' l'unica cosa onesta: il bot non puo' restringere il
+            # file da solo, ma chi usa il computer puo' deciderlo sapendolo.
+            risposta["avviso"] = (
+                f"Le chiavi sono salvate in {env_path.name} ma non e' stato possibile "
+                "riservarne la lettura al tuo utente. Su un computer condiviso, "
+                "proteggi tu la cartella o usa chiavi di sola prova."
+            )
+        return _json(risposta)
+
+    async def test_connection(request: web.Request) -> web.Response:
+        """Verifica che le chiavi funzionino davvero, prima di avviare."""
+        from execution.binance import AiohttpClient, BinanceBroker
+
+        # Le chiavi si preparano prima e si usano dopo: anche in paper,
+        # dove il bot non le userebbe, verificarle ha senso. Si prova
+        # sempre la testnet, perche' e' per quella che servono.
+        modalita = (
+            supervisor.config.mode
+            if supervisor.config.mode is Mode.LIVE
+            else Mode.TESTNET
+        )
+        try:
+            credentials = load_credentials(modalita)
+        except Exception as exc:
+            return _error(f"chiavi non disponibili: {exc}")
+        if credentials is None:
+            return _error(
+                "nessuna chiave salvata: incollale qui sopra e premi "
+                "«Salva e verifica». Servono solo per la testnet; in paper "
+                "il bot funziona senza."
+            )
+
+        from core.clock import LiveClock
+
+        # La verifica parla con la testnet, non con la modalita' corrente:
+        # chiedere a un conto paper che non esiste non direbbe niente.
+        raw = supervisor.config.model_dump()
+        raw["mode"] = modalita.value
+        broker = BinanceBroker(
+            config=AppConfig.model_validate(raw),
+            credentials=credentials,
+            clock=LiveClock(),
+            http=AiohttpClient(),
+        )
+        try:
+            filters = await broker.exchange_filters()
+            state = await broker.account_state()
+        except Exception as exc:
+            return _error(f"connessione fallita: {exc}")
+        finally:
+            await broker.close()
+
+        # La testnet accredita centinaia di asset finti: elencarli tutti
+        # riempirebbe lo schermo di roba che al bot non serve. Si mostrano la
+        # valuta di conto e le monete dei simboli abilitati.
+        interessanti = {supervisor.config.quote_asset} | {
+            s.base_asset for s in supervisor.config.enabled_symbols
+        }
+        saldi = {
+            asset: str(amount)
+            for asset, amount in sorted(state.balances.items())
+            if amount > 0 and asset in interessanti
+        }
+        return _json(
+            {
+                "ok": True,
+                "endpoint": supervisor.config.rest_url,
+                "simboli_letti": sorted(filters),
+                "saldi": saldi,
+                "altri_asset": max(0, len(state.balances) - len(saldi)),
+            }
+        )
+
+    async def start_bot(request: web.Request) -> web.Response:
+        try:
+            await supervisor.start()
+        except UiError as exc:
+            return _error(str(exc))
+        except Exception as exc:
+            return _error(f"avvio fallito: {exc}")
+        return _json({"ok": True, "stato": supervisor.status()})
+
+    async def stop_bot(request: web.Request) -> web.Response:
+        await supervisor.stop()
+        return _json({"ok": True, "stato": supervisor.status()})
+
+    async def flatten(request: web.Request) -> web.Response:
+        try:
+            closed = await supervisor.flatten()
+        except UiError as exc:
+            return _error(str(exc))
+        return _json({"ok": True, "posizioni": closed})
+
+    async def prices(request: web.Request) -> web.Response:
+        return _json(supervisor.prezzi())
+
+    async def capital(request: web.Request) -> web.Response:
+        return _json(supervisor.capitale())
+
+    async def capital_movement(request: web.Request) -> web.Response:
+        payload = await _read_json(request)
+        tipo = str(payload.get("tipo", ""))
+        try:
+            importo = Decimal(str(payload.get("importo", "0")))
+        except (ArithmeticError, ValueError):
+            return _error("importo non numerico")
+        try:
+            return _json(supervisor.registra_movimento(tipo, importo))
+        except UiError as exc:
+            return _error(str(exc))
+
+    async def reset_killswitch(request: web.Request) -> web.Response:
+        try:
+            done = supervisor.reset_killswitch()
+        except UiError as exc:
+            return _error(str(exc))
+        if not done:
+            return _error(
+                "riarmo rifiutato: il periodo di attesa dopo lo stop non e' ancora finito"
+            )
+        return _json({"ok": True})
+
+    async def fetch_data(request: web.Request) -> web.Response:
+        if supervisor.job is not None and supervisor.job.is_running:
+            return _error(f"c'e' gia' un'operazione in corso: {supervisor.job.name}")
+        payload = await _read_json(request)
+        days = max(1, min(int(payload.get("giorni", 30)), 365))
+        # Il flusso ordini e' molto piu' voluminoso delle candele, quindi
+        # ha una finestra corta e separata. Senza, la prova della strategia
+        # resta cieca su meta' di cio' che il bot guarda dal vivo.
+        # In ore, non in giorni: un giorno di BTCUSDT sono milioni di
+        # scambi, e il valore precedente faceva sembrare il programma
+        # bloccato per mezz'ora.
+        ore_flusso = max(0, min(int(payload.get("ore_flusso", 6)), 48))
+        includi_spente = bool(payload.get("includi_coppie_da_provare", True))
+
+        job = Job(name=f"scarico dati ({days} giorni)")
+        supervisor.job = job
+
+        async def worker() -> None:
+            from scripts.fetch_history import fetch
+
+            try:
+                # Anche le coppie spente: servono al passo 4 per
+                # confrontarle. Scaricarne i dati non le fa operare.
+                simboli = [
+                    s.symbol
+                    for s in supervisor.config.symbols
+                    if s.enabled or includi_spente
+                ]
+                total = await fetch(
+                    simboli,
+                    days,
+                    config_path,
+                    trade_hours=ore_flusso,
+                    # Il flusso solo per le coppie che il bot usa: per le
+                    # altre bastano le candele a fare il confronto.
+                    symbols_flusso=[
+                        s.symbol for s in supervisor.config.enabled_symbols
+                    ],
+                    progresso=lambda testo: setattr(job, "message", testo),
+                )
+                job.state = "completato"
+                job.message = f"scaricate {total} candele"
+                job.result = {"candele": total}
+            except Exception as exc:
+                job.state = "fallito"
+                job.message = f"{type(exc).__name__}: {exc}"
+
+        supervisor.job_task = asyncio.create_task(worker())
+        return _json({"ok": True, "lavoro": job.to_dict()})
+
+    async def explore_frequency(request: web.Request) -> web.Response:
+        """Misura quante operazioni produce ogni impostazione, e il costo.
+
+        E' la risposta onesta a "voglio che operi di piu'": non si', non
+        no, ma quante e a che prezzo, sui dati che l'utente ha scaricato.
+        """
+        if supervisor.job is not None and supervisor.job.is_running:
+            return _error(f"c'e' gia' un'operazione in corso: {supervisor.job.name}")
+        job = Job(name="esplorazione della frequenza")
+
+        def work() -> dict[str, Any]:
+            config = supervisor.config
+            store = ParquetStore(config.data.parquet_root)
+            symbols = [s.symbol for s in config.enabled_symbols]
+            candles = store.read_candles(symbols=symbols)
+            if not candles:
+                raise UiError(
+                    "nessuna candela salvata: esegui prima il passo 2 e scarica lo storico"
+                )
+            flusso = store.read_trades(
+                symbols=symbols,
+                start_ms=candles[0].open_time_ms,
+                end_ms=candles[-1].close_time_ms + 1,
+            )
+            righe = esplora(config, candles, flusso)
+            # L'altra meta' della domanda: non solo quanto si e' esigenti,
+            # ma su che durata di barra. Su barre piu' lunghe il movimento
+            # atteso cresce mentre il costo di un giro resta lo stesso, ed
+            # e' spesso li' che si decide se la strategia possa operare.
+            orizzonti = esplora_orizzonti(config, candles, flusso)
+
+            # La leva piu' grossa, e la meno ovvia: il costo di un giro e'
+            # lo stesso su ogni coppia, il movimento atteso no.
+            tutte = [s.symbol for s in config.symbols]
+            per_simbolo = {
+                simbolo: store.read_candles(symbols=[simbolo]) for simbolo in tutte
+            }
+            flussi = {
+                simbolo: store.read_trades(symbols=[simbolo])
+                for simbolo in tutte
+                if per_simbolo.get(simbolo)
+            }
+            coppie = esplora_coppie(config, per_simbolo, flussi)
+            minime = config.features.warmup_bars + 50
+            saltati = [
+                f"{f} barre" for f in (1, 5, 15, 60) if len(candles) // f < minime
+            ]
+            return {
+                "profili": [riga.to_dict() for riga in righe],
+                "orizzonti": [riga.to_dict() for riga in orizzonti],
+                "coppie": [riga.to_dict() for riga in coppie],
+                "coppie_senza_dati": sorted(
+                    s.symbol for s in config.symbols if not per_simbolo.get(s.symbol)
+                ),
+                "orizzonti_saltati": saltati,
+                "con_flusso_ordini": bool(flusso),
+                "nota": (
+                    "Ogni giro completo costa "
+                    f"{righe[0].costo_giro_bps:.1f} punti base fra commissioni e "
+                    "spread. La colonna «costo al giorno» dice quanto pesa, in "
+                    "percentuale del controvalore scambiato, la frequenza di quella "
+                    "riga. Nessuna impostazione scende sotto il pareggio atteso: "
+                    "sotto quella riga il bot pagherebbe per operare."
+                ),
+            }
+
+        # Prima le verifiche che possono fallire subito, cosi' l'errore
+        # arriva come messaggio invece che come lavoro fallito in silenzio.
+        store = ParquetStore(supervisor.config.data.parquet_root)
+        if not store.read_candles(
+            symbols=[s.symbol for s in supervisor.config.enabled_symbols]
+        ):
+            return _error(
+                "nessuna candela salvata: esegui prima il passo 2 e scarica lo storico"
+            )
+
+        supervisor.job = job
+
+        async def worker() -> None:
+            try:
+                job.result = await asyncio.to_thread(work)
+                job.state = "completato"
+                job.message = f"{len(job.result['profili'])} impostazioni misurate"
+            except Exception as exc:
+                job.state = "fallito"
+                job.message = f"{type(exc).__name__}: {exc}"
+
+        supervisor.job_task = asyncio.create_task(worker())
+        return _json({"ok": True, "lavoro": job.to_dict()})
+
+    async def run_experiments(request: web.Request) -> web.Response:
+        """Prova alcune varianti dei parametri e dice quali reggono.
+
+        Non applica niente: propone, con i numeri accanto. Un bot che si
+        riscrive i parametri da solo mentre opera e' un bot di cui
+        nessuno sa piu' cosa stia facendo.
+        """
+        if supervisor.job is not None and supervisor.job.is_running:
+            return _error(f"c'e' gia' un'operazione in corso: {supervisor.job.name}")
+
+        store = ParquetStore(supervisor.config.data.parquet_root)
+        simboli = [s.symbol for s in supervisor.config.enabled_symbols]
+        if not store.read_candles(symbols=simboli):
+            return _error(
+                "nessuna candela salvata: esegui prima il passo 2 e scarica lo storico"
+            )
+
+        job = Job(name="esperimenti sui parametri")
+
+        def work() -> dict[str, Any]:
+            config = supervisor.config
+            candles = store.read_candles(symbols=simboli)
+            impronta = impronta_dei_dati(candles)
+            registro = RegistroEsperimenti(
+                percorso_registro(config).with_name("esperimenti.jsonl")
+            )
+            esiti = valuta_candidati(config, candles, CANDIDATI_STANDARD)
+            righe: list[dict[str, Any]] = []
+            for esito in esiti:
+                gia_visto = registro.gia_provato(esito.candidato, impronta)
+                decisione = registro.annota(
+                    esito, impronta_dati=impronta, ts_ms=int(time.time() * 1000)
+                )
+                righe.append(
+                    {
+                        **esito.to_dict(),
+                        "promosso": decisione.promosso,
+                        "motivo_decisione": decisione.motivo,
+                        "gia_provato_su_questi_dati": gia_visto,
+                    }
+                )
+            return {
+                "esperimenti": righe,
+                "impronta_dati": impronta,
+                "prove_registrate": len(registro.storia()),
+                "nota": (
+                    "Una variante viene proposta solo se regge su piu' finestre "
+                    "temporali separate, non se vince in media. Niente viene "
+                    "applicato da solo: le modifiche le fai tu nelle impostazioni."
+                ),
+            }
+
+        supervisor.job = job
+
+        async def worker() -> None:
+            try:
+                job.result = await asyncio.to_thread(work)
+                job.state = "completato"
+                promossi = sum(
+                    1 for r in job.result["esperimenti"] if r["promosso"]
+                )
+                job.message = (
+                    f"{len(job.result['esperimenti'])} varianti provate, "
+                    f"{promossi} reggono"
+                )
+            except Exception as exc:
+                job.state = "fallito"
+                job.message = f"{type(exc).__name__}: {exc}"
+
+        supervisor.job_task = asyncio.create_task(worker())
+        return _json({"ok": True, "lavoro": job.to_dict()})
+
+    async def run_backtest(request: web.Request) -> web.Response:
+        if supervisor.job is not None and supervisor.job.is_running:
+            return _error(f"c'e' gia' un'operazione in corso: {supervisor.job.name}")
+        job = Job(name="backtest")
+        supervisor.job = job
+
+        def work() -> dict[str, Any]:
+            config = supervisor.config
+            if config.backtest is None:
+                raise UiError("sezione 'backtest' assente in configurazione")
+            store = ParquetStore(config.data.parquet_root)
+            symbols = [s.symbol for s in config.enabled_symbols]
+
+            # La finestra scritta nel file e' un default, mentre i dati
+            # scaricati dal pannello sono "gli ultimi N giorni": se le due
+            # cose non si sovrappongono il backtest non deve dire "scarica lo
+            # storico" mentre lo storico c'e'. Si usa l'intersezione quando
+            # esiste, altrimenti tutto quello che c'e', dicendo quale periodo
+            # ha usato davvero.
+            candles = store.read_candles(
+                symbols=symbols,
+                start_ms=datetime_to_ms(config.backtest.start),
+                end_ms=datetime_to_ms(config.backtest.end),
+            )
+            window_note = "finestra indicata in configurazione"
+            if not candles:
+                candles = store.read_candles(symbols=symbols)
+                window_note = "tutto lo storico disponibile"
+            if not candles:
+                raise UiError(
+                    "nessuna candela salvata: esegui prima il passo 2 e scarica lo storico"
+                )
+            # Il flusso ordini, se c'e', entra nella simulazione: senza,
+            # l'order flow imbalance resta spento e la prova misura una
+            # strategia a cui manca meta' degli ingressi.
+            flusso = store.read_trades(
+                symbols=symbols,
+                start_ms=candles[0].open_time_ms,
+                end_ms=candles[-1].close_time_ms + 1,
+            )
+            result = BacktestEngine(config, build_generator(config)).run(
+                candles, trades=flusso
+            )
+            metrics = result.metrics
+            giudizio = assess(metrics)
+            # I motivi si raggruppano per tipo, non per valore: "edge netto
+            # -15.6 bps" e "edge netto -15.4 bps" sono lo stesso problema, e
+            # tenerli separati produrrebbe un elenco illeggibile di varianti.
+            motivi: dict[str, dict[str, Any]] = {}
+            for decision in result.decisions:
+                for reason in decision.rejection_reasons:
+                    key = re.sub(r"[-+]?\d[\d.,]*", "N", reason.split("(")[0]).strip()[:90]
+                    entry = motivi.setdefault(key, {"conteggio": 0, "esempio": reason})
+                    entry["conteggio"] = int(entry["conteggio"]) + 1
+            # Che cosa poteva succedere, non solo cosa e' successo: con
+            # poche operazioni la simulazione lo dichiara invece di
+            # produrre percentili che sembrano una misura.
+            scenari = simula_scenari(
+                result.trades,
+                capitale=config.capital_quote,
+                limite_perdita=config.risk.killswitch.max_daily_drawdown_pct,
+            )
+            payload: dict[str, Any] = {
+                "scenari": scenari.to_dict(),
+                "periodo": {
+                    "da": ms_to_datetime(candles[0].open_time_ms).strftime("%d/%m/%Y"),
+                    "a": ms_to_datetime(candles[-1].close_time_ms).strftime("%d/%m/%Y"),
+                    "nota": window_note,
+                },
+                "barre": result.bars_processed,
+                "trade_di_mercato": len(flusso),
+                "nota_flusso": (
+                    "con il flusso ordini: la prova vede quello che vede il bot dal "
+                    "vivo, tranne il libro, che non e' recuperabile dallo storico."
+                    if flusso
+                    else "senza flusso ordini: la prova e' cieca sull'order flow, che "
+                    "dal vivo pesa quanto lo slancio. Scaricalo per una misura "
+                    "piu' vicina al vero."
+                ),
+                "ordini": result.orders_submitted,
+                "rifiuti": result.orders_rejected,
+                # Ordini approvati che l'exchange simulato non avrebbe
+                # potuto eseguire al prezzo trovato alla barra dopo.
+                "non_eseguiti": result.orders_unfilled,
+                "equity_iniziale": str(result.initial_equity),
+                "equity_finale": str(result.final_equity),
+                "rendimento": round(result.total_return, 6),
+                "operazioni": metrics.trades,
+                "sharpe": metrics.sharpe,
+                "sortino": metrics.sortino,
+                "max_drawdown": round(metrics.max_drawdown, 6),
+                "win_rate": metrics.win_rate,
+                "profit_factor": metrics.profit_factor,
+                "expectancy": str(metrics.expectancy),
+                "commissioni": str(metrics.total_fees),
+                "regge_i_costi": metrics.is_viable,
+                "verdetto": {
+                    "esito": giudizio.outcome,
+                    "spiegazione": giudizio.explanation,
+                },
+                "motivi_rifiuto": [
+                    {"esempio": entry["esempio"], "volte": entry["conteggio"]}
+                    for _, entry in sorted(
+                        motivi.items(),
+                        key=lambda item: int(item[1]["conteggio"]),
+                        reverse=True,
+                    )[:8]
+                ],
+                "curva": [
+                    {"t": ts, "v": str(value)}
+                    for ts, value in result.equity_curve[
+                        :: max(1, len(result.equity_curve) // 400)
+                    ]
+                ],
+            }
+            return payload
+
+        async def worker() -> None:
+            try:
+                job.result = await asyncio.to_thread(work)
+                job.state = "completato"
+                # Tre esiti, non due: "pochi dati" non e' una bocciatura, e
+                # annunciarlo come tale farebbe scartare una strategia che
+                # non e' mai stata misurata davvero.
+                verdetto = dict(job.result.get("verdetto", {}))
+                job.message = str(
+                    verdetto.get("spiegazione", "prova conclusa")
+                )
+            except Exception as exc:
+                job.state = "fallito"
+                job.message = f"{type(exc).__name__}: {exc}"
+
+        supervisor.job_task = asyncio.create_task(worker())
+        return _json({"ok": True, "lavoro": job.to_dict()})
+
+    async def job_status(request: web.Request) -> web.Response:
+        return _json({"lavoro": supervisor.job.to_dict() if supervisor.job else None})
+
+    async def on_cleanup(app: web.Application) -> None:
+        await supervisor.stop()
+
+    app.router.add_get("/", index)
+    app.router.add_get("/api/stato", status)
+    app.router.add_get("/api/decisioni", decisions)
+    app.router.add_get("/api/equity", equity)
+    app.router.add_get("/api/config", get_config)
+    app.router.add_post("/api/config", put_config)
+    app.router.add_post("/api/credenziali", set_credentials)
+    app.router.add_post("/api/test-connessione", test_connection)
+    app.router.add_post("/api/avvia", start_bot)
+    app.router.add_post("/api/ferma", stop_bot)
+    app.router.add_post("/api/chiudi-tutto", flatten)
+    app.router.add_post("/api/killswitch-reset", reset_killswitch)
+    app.router.add_get("/api/capitale", capital)
+    app.router.add_get("/api/prezzi", prices)
+    app.router.add_post("/api/capitale/movimento", capital_movement)
+    app.router.add_post("/api/scarica-dati", fetch_data)
+    app.router.add_post("/api/backtest", run_backtest)
+    app.router.add_post("/api/frequenza", explore_frequency)
+    app.router.add_post("/api/esperimenti", run_experiments)
+    app.router.add_get("/api/lavoro", job_status)
+    app.router.add_static("/static/", STATIC_DIR)
+    app.on_cleanup.append(on_cleanup)
+    return app
+
+
+def run_ui(
+    config_path: Path,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8777,
+    env_path: Path = Path(".env"),
+    open_browser: bool = True,
+) -> None:
+    """Avvia il pannello e, se possibile, apre il browser."""
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        # Un pannello che puo' muovere denaro non si espone sulla rete.
+        raise ValueError(
+            f"host {host!r} rifiutato: il pannello si affaccia solo su 127.0.0.1"
+        )
+
+    load_dotenv(env_path)
+    app = create_app(config_path, env_path=env_path)
+    url = f"http://{host}:{port}"
+    print(f"\n  Pannello di controllo: {url}\n  (Ctrl+C per chiudere)\n")
+
+    if open_browser:
+        import threading
+        import webbrowser
+
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+
+    web.run_app(app, host=host, port=port, print=None)
